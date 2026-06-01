@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}Symbol Settings{% endblock %}
+
+{% block content %}
+<header class="header">
+  <div class="header__brand">
+    <span class="header__logo"></span>
+    <h1>Symbol Settings</h1>
+  </div>
+  <p class="header__subtitle">Manage symbols, time frames, stop loss &amp; target</p>
+</header>
+
+<section class="strategy-bar" id="strategy-bar">
+  <div class="strategy-bar__main">
+    <div class="strategy-bar__status">
+      <span class="status-pill status-pill--sm" id="api-status" data-state="disconnected">
+        <span class="status-pill__dot"></span>
+        <span class="status-pill__text">API off</span>
+      </span>
+      <span class="status-pill status-pill--sm" id="strategy-status" data-state="stopped">
+        <span class="status-pill__dot"></span>
+        <span class="status-pill__text">Stopped</span>
+      </span>
+    </div>
+
+    <div class="strategy-bar__fields">
+      <label class="cp-field" for="strategy-start-time">
+        <span class="cp-field__label">Start</span>
+        <input type="time" id="strategy-start-time" value="09:30" required>
+      </label>
+      <label class="cp-field" for="strategy-stop-time">
+        <span class="cp-field__label">Stop</span>
+        <input type="time" id="strategy-stop-time" value="15:00" required>
+      </label>
+      <label class="cp-field cp-field--num" for="strategy-max-trades">
+        <span class="cp-field__label">Max</span>
+        <input type="number" id="strategy-max-trades" value="2" min="1" max="99" step="1" required
+               title="Max trades per day (all symbols)">
+      </label>
+      <button type="button" id="btn-save-settings" class="btn btn--ghost btn--xs" data-log-label="Click: Save strategy settings">Save</button>
+    </div>
+
+    <div class="strategy-bar__actions">
+      <button type="button" id="btn-api-login" class="btn btn--outline btn--xs" data-log-label="Click: Login to API">Login</button>
+      <button type="button" id="btn-strategy-start" class="btn btn--success btn--xs" data-log-label="Click: Start Strategy" disabled>Start</button>
+      <button type="button" id="btn-strategy-stop" class="btn btn--danger btn--xs" data-log-label="Click: Stop Strategy" disabled>Stop</button>
+    </div>
+  </div>
+  <p class="strategy-bar__hint" id="strategy-hint">Log in and save settings to run the strategy.</p>
+</section>
+
+<main class="main">
+  <section class="toolbar">
+    <button type="button" id="btn-add" class="btn btn--primary" data-log-label="Click: Add Symbol">+ Add Symbol</button>
+  </section>
+
+  <section class="table-wrap">
+    <table class="data-table" id="symbols-table">
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Time Frame</th>
+          <th>Stop Loss %</th>
+          <th>Target %</th>
+          <th class="col-actions">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="symbols-tbody">
+        <tr class="empty-row" id="empty-row">
+          <td colspan="5">No symbols yet. Click &quot;Add Symbol&quot; to create one.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<div class="modal" id="symbol-modal" aria-hidden="true">
+  <div class="modal__backdrop" data-close-modal></div>
+  <div class="modal__dialog" role="dialog" aria-labelledby="modal-title">
+    <header class="modal__header">
+      <h2 id="modal-title">Edit Symbol</h2>
+      <button type="button" class="modal__close" data-close-modal aria-label="Close">&times;</button>
+    </header>
+    <form id="symbol-form" class="modal__body">
+      <input type="hidden" id="symbol-id" name="id">
+      <div class="field">
+        <label for="symbol-name">Symbol Name</label>
+        <input type="text" id="symbol-name" name="symbol_name" required placeholder="e.g. ACC">
+      </div>
+      <div class="field">
+        <label for="time-frame">Time Frame</label>
+        <select id="time-frame" name="time_frame" required>
+          <option value="">Select time frame</option>
+          <option value="1m">1 minute</option>
+          <option value="3m">3 minutes</option>
+          <option value="5m">5 minutes</option>
+          <option value="15m">15 minutes</option>
+          <option value="30m">30 minutes</option>
+          <option value="1h">1 hour</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="stop-loss">Stop Loss (%)</label>
+          <input type="number" id="stop-loss" name="stop_loss_pct" required min="0.01" step="0.01" placeholder="1.5">
+        </div>
+        <div class="field">
+          <label for="target">Target (%)</label>
+          <input type="number" id="target" name="target_pct" required min="0.01" step="0.01" placeholder="2.0">
+        </div>
+      </div>
+      <p class="form-error" id="form-error" hidden></p>
+      <footer class="modal__footer">
+        <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
+        <button type="submit" class="btn btn--primary" id="btn-ok">OK</button>
+      </footer>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/strategy.js') }}"></script>
+<script src="{{ url_for('static', filename='js/symbols.js') }}"></script>
+{% endblock %}

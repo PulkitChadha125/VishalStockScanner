@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}Order Logs{% endblock %}
+
+{% block content %}
+<header class="header">
+  <div class="header__brand">
+    <span class="header__logo"></span>
+    <h1>Order Logs</h1>
+  </div>
+  <p class="header__subtitle">All orders placed from this application</p>
+</header>
+
+<main class="main">
+  <section class="table-wrap table-wrap--wide">
+    <table class="data-table" id="order-logs-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Symbol</th>
+          <th>Side</th>
+          <th>Type</th>
+          <th>Qty</th>
+          <th>Price</th>
+          <th>Status</th>
+          <th>Stop Loss</th>
+          <th>Target</th>
+        </tr>
+      </thead>
+      <tbody id="order-logs-tbody">
+        <tr class="empty-row" id="order-empty-row">
+          <td colspan="9">No orders logged yet.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/order_logs.js') }}"></script>
+{% endblock %}

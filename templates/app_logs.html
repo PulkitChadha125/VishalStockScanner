@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}App Logs{% endblock %}
+
+{% block content %}
+<header class="header">
+  <div class="header__brand">
+    <span class="header__logo"></span>
+    <h1>App Logs</h1>
+  </div>
+  <p class="header__subtitle">User activity and clicks across the application</p>
+</header>
+
+<main class="main">
+  <section class="table-wrap table-wrap--wide">
+    <table class="data-table" id="app-logs-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Page</th>
+          <th>Element</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody id="app-logs-tbody">
+        <tr class="empty-row" id="app-empty-row">
+          <td colspan="6">No activity logged yet.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/app_logs.js') }}"></script>
+{% endblock %}
