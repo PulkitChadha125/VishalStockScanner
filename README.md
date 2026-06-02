@@ -1,8 +1,7 @@
-# Vishal Trading Strategy — Web Application
+# Vishal Trading Strategy - Web Application
 
-A Flask-based web application for configuring a market-depth trading strategy, managing symbol settings, and reviewing order and activity logs. The UI uses a dark theme (black primary, blue accents) with a side navigation drawer.
-
-Broker API integration and the live strategy engine are **not connected yet** — the control panel and APIs are in place as stubs so you can wire the broker later.
+A Flask-based trading control panel and execution service using FYERS integration.  
+This app manages symbol settings, strategy scheduling, market-depth signal evaluation, trade execution, and full logging (order + app activity).
 
 ---
 
@@ -17,7 +16,8 @@ Broker API integration and the live strategy engine are **not connected yet** �
 - [REST API reference](#rest-api-reference)
 - [Database](#database)
 - [For developers](#for-developers)
-- [Roadmap](#roadmap)
+- [Trading Logic (Conditions)](#trading-logic-conditions)
+- [Known Notes](#known-notes)
 
 ---
 
@@ -27,22 +27,22 @@ Broker API integration and the live strategy engine are **not connected yet** �
 
 The strategy monitors **market depth** for a list of symbols. When buy/sell volume imbalance matches a configured **volume gap**, it enters a trade and applies **stop loss** and **target** percentages from symbol settings.
 
-### Core rules (from product spec)
+### Core rules
 
 | Rule | Description |
 |------|-------------|
-| **Symbol settings** | Per symbol: name, time frame, stop loss %, target % (volume gap planned) |
+| **Symbol settings** | Per symbol: symbol name, time frame, volume difference, stop loss %, target % |
 | **Trading window** | Strategy runs only between **start time** and **stop time** (e.g. 09:30–15:00) |
 | **One open trade** | Only **one active trade at a time** across the universe — if ACC is in a trade, no new trade in SBI until ACC exits via SL/target |
 | **Max trades per day** | **Universe-wide** daily cap (default **2**). Example: 1 trade in SEC + 1 in SBI = 2 total; no further trades that day |
-| **Daily reset** | After stop time (e.g. 15:00), strategy stops; next day auto-login ~09:00, strategy starts at configured start time (~09:30) |
+| **Daily schedule** | Auto-login at 09:00 IST, auto-start at configured start time, auto-stop at configured stop time |
 | **Margin intent** | One stock at a time so full capital margin (e.g. 5×) can be used on a single position |
 
-### Planned (not yet in UI/engine)
+### Current scope
 
-- Volume gap per symbol
-- Scheduler: auto broker login at 09:00, auto start at start time
-- Live market-depth scanning and order placement via broker API
+- FYERS login from `FyersCredentials.csv` is integrated.
+- Strategy engine runs in background and checks market data every second.
+- Auto scheduler is integrated.
 
 ---
 
@@ -58,23 +58,25 @@ The strategy monitors **market depth** for a list of symbols. When buy/sell volu
 
 ### Symbol Settings features
 
-- **Strategy bar (compact)**
-  - API status, strategy status
+- **Strategy bar (compact):**
+  - API status, strategy status, available balance
   - Start / Stop time, **Max Trades** (default 2)
-  - **Save**, **Login**, **Start**, **Stop**
+  - **Save**, **Login/Logout**, **Start**, **Stop**
 - **Symbol table**: add, edit, delete symbols
-  - Fields: symbol name, time frame, stop loss %, target %
+  - Fields: symbol name, time frame, volume difference, stop loss %, target %
 
 ### Logging
 
 - **App logs**: page views, button clicks, API actions (client + server)
 - **Order logs**: stored when orders are posted via API (daily max enforced)
 
-### Backend
+### Strategy backend
 
 - SQLite persistence (`data/symbols.db`)
+- FYERS service wrapper (`app/fyers_service.py`)
+- Live strategy engine (`app/strategy_engine.py`)
+- Clock scheduler (`app/strategy_scheduler.py`)
 - REST APIs for symbols, strategy settings, logs
-- Stub strategy endpoints (login/start/stop) ready for broker wiring
 
 ---
 
@@ -99,6 +101,10 @@ Vishal Project 1/
 │   ├── config.py           # Paths and config
 │   ├── database.py         # Schema and connections
 │   ├── repository.py       # Data access layer
+│   ├── fyers_credentials.py# CSV credential loader
+│   ├── fyers_service.py    # FYERS auth/balance/depth/order wrapper
+│   ├── strategy_engine.py  # 1-second scan, entries, exits
+│   ├── strategy_scheduler.py# 09:00 login + start/stop clock scheduler
 │   ├── order_logger.py     # Helper to record orders from strategy code
 │   └── routes/
 │       ├── pages.py        # HTML pages
@@ -161,18 +167,22 @@ Open in your browser: **http://127.0.0.1:5000**
 
 ### Symbol Settings (`/`)
 
-1. **Login** — Marks API as connected (stub until broker credentials are added).
-2. Set **Start**, **Stop**, and **Max** trades, then click **Save**.
-3. Click **Start** to mark the strategy as running (stub).
+1. Set **Start**, **Stop**, and **Max** trades, then click **Save**.
+2. Click **Start**:
+   - If not logged in, app auto-logins to FYERS using `FyersCredentials.csv`
+   - Starts background strategy engine
+3. Optional: use **Login** button manually to test FYERS session.
 4. Use **+ Add Symbol** to add symbols; **Edit** / **Delete** on each row.
-5. **Stop** halts the strategy; **Logout** disconnects API (only when strategy is stopped).
+5. **Stop** halts the strategy (and squares off open position in current implementation).
+6. **Logout** disconnects API (allowed only when strategy is stopped).
 
 **Max trades example**
 
 - Max = **2**: one trade in SEC and one in SBI counts as 2 — no more trades that day.
 - Max = **3**: up to three trades total across any symbols.
 
-The status line under the bar shows trades used today vs the limit.
+The status line shows trades used today vs the limit.
+Balance appears in the top strategy bar after login.
 
 ### Order Logs (`/order-logs`)
 
@@ -224,16 +234,17 @@ Base URL: `http://127.0.0.1:5000`
 }
 ```
 
-### Strategy — `/api/strategy`
+### Strategy - `/api/strategy`
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/strategy` | Settings + `trades_taken_today`, `can_take_more_trades` |
 | PUT | `/api/strategy/times` | Save start/stop times and `max_trades` |
-| POST | `/api/strategy/login` | Login stub |
-| POST | `/api/strategy/logout` | Logout stub |
-| POST | `/api/strategy/start` | Start stub (requires API “connected”) |
+| POST | `/api/strategy/login` | Login to FYERS using CSV credentials |
+| POST | `/api/strategy/logout` | Logout from FYERS runtime session |
+| POST | `/api/strategy/start` | Auto-login if needed, then start engine |
 | POST | `/api/strategy/stop` | Stop stub |
+| GET | `/api/strategy/balance` | Fetch current balance from FYERS |
 
 **PUT body example:**
 
@@ -245,7 +256,7 @@ Base URL: `http://127.0.0.1:5000`
 }
 ```
 
-### Logs — `/api/logs`
+### Logs - `/api/logs`
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -277,7 +288,7 @@ SQLite file: `data/symbols.db`
 
 | Table | Purpose |
 |-------|---------|
-| `symbol_settings` | Per-symbol configuration |
+| `symbol_settings` | Per-symbol config (symbol, timeframe, volume_difference, SL%, target%) |
 | `strategy_settings` | Single row: times, max trades, running/API flags |
 | `order_logs` | Placed orders |
 | `app_logs` | User and system activity |
@@ -315,13 +326,20 @@ if can_take_more_trades():
     # place trade ...
 ```
 
-### Wire broker API later
+### Strategy runtime files
 
-Replace stub logic in `app/routes/strategy.py`:
+- `app/fyers_service.py`: wraps FYERS login, balance, depth, order placement
+- `app/strategy_engine.py`: core loop and trade lifecycle
+- `app/strategy_scheduler.py`: clock-based auto login/start/stop
 
-- `login_api` / `logout_api` — real broker session  
-- `start_strategy` / `stop_strategy` — start/stop background worker  
-- Add market-depth loop that respects one-open-trade and `max_trades`
+### Console depth prints
+
+Each scan prints depth details per symbol in terminal:
+- bid/ask prices
+- bid/ask quantities
+- buy/sell volume differences
+- threshold (`volume_difference`)
+- resulting signal (`BUY`, `SELL`, or `NONE`)
 
 ### Configuration
 
@@ -330,14 +348,73 @@ Replace stub logic in `app/routes/strategy.py`:
 
 ---
 
-## Roadmap
+## Trading Logic (Conditions)
 
-- [ ] Broker API login and session management  
-- [ ] Volume gap field per symbol  
-- [ ] Live strategy engine (market depth, entries, SL/target)  
-- [ ] Scheduler (09:00 login, start at configured time, 15:00 stop)  
-- [ ] One open trade enforcement in engine  
-- [ ] Production deployment (e.g. Gunicorn, HTTPS)
+### Entry scan frequency
+- Strategy scans all configured symbols every **1 second** while running.
+
+### Buy condition
+- For a symbol:
+  - `buy_diff = bid_qty - ask_qty`
+  - If `buy_diff >= volume_difference`, signal = **BUY**
+
+### Sell condition
+- For a symbol:
+  - `sell_diff = ask_qty - bid_qty`
+  - If `sell_diff >= volume_difference`, signal = **SELL**
+
+### One-trade-at-a-time condition
+- If one position is open, no new entries are taken in any symbol.
+
+### Entry execution
+- On signal:
+  - Place market order (BUY side=1, SELL side=-1)
+  - Record order log with status `ENTRY`
+  - Compute and store SL / target prices
+
+### Stop loss condition
+- If open position is BUY:
+  - `sl_price = entry * (1 - stop_loss_pct/100)`
+  - Exit when `LTP <= sl_price`
+- If open position is SELL:
+  - `sl_price = entry * (1 + stop_loss_pct/100)`
+  - Exit when `LTP >= sl_price`
+- Exit order is logged as `EXIT_SL`.
+
+### Target condition
+- If open position is BUY:
+  - `target_price = entry * (1 + target_pct/100)`
+  - Exit when `LTP >= target_price`
+- If open position is SELL:
+  - `target_price = entry * (1 - target_pct/100)`
+  - Exit when `LTP <= target_price`
+- Exit order is logged as `EXIT_TARGET`.
+
+### Max trades condition
+- Daily universe-wide cap:
+  - If `trades_taken_today >= max_trades`, no more entries for the day.
+- Scheduler/engine logs this state in app logs.
+
+### Time-window condition
+- Strategy evaluates entries only in configured `start_time -> stop_time`.
+- Auto scheduler behavior:
+  - **09:00 IST**: auto-login once per day
+  - **Start time**: auto-start strategy once per day
+  - **Stop time**: auto-stop strategy once per day
+
+### Logging behavior
+- **Order logs** include each entry/exit with side, price, qty, stop loss, target, status.
+- **App logs** capture:
+  - page views
+  - UI clicks
+  - strategy/scheduler events
+  - API actions
+
+## Known Notes
+
+- This app currently uses Flask dev server; use production WSGI for deployment.
+- Keep `FyersCredentials.csv` out of git and rotate secrets if exposed.
+- If server restarts, runtime state is reconciled so stale DB `is_running` is reset.
 
 ---
 
