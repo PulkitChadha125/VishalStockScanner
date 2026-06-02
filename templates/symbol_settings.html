@@ -22,6 +22,9 @@
         <span class="status-pill__dot"></span>
         <span class="status-pill__text">Stopped</span>
       </span>
+      <span class="status-pill status-pill--sm" id="balance-status">
+        <span class="status-pill__text">Balance: --</span>
+      </span>
     </div>
 
     <div class="strategy-bar__fields">
@@ -61,6 +64,7 @@
         <tr>
           <th>Symbol</th>
           <th>Time Frame</th>
+          <th>Volume Diff</th>
           <th>Stop Loss %</th>
           <th>Target %</th>
           <th class="col-actions">Actions</th>
@@ -68,7 +72,7 @@
       </thead>
       <tbody id="symbols-tbody">
         <tr class="empty-row" id="empty-row">
-          <td colspan="5">No symbols yet. Click &quot;Add Symbol&quot; to create one.</td>
+          <td colspan="6">No symbols yet. Click &quot;Add Symbol&quot; to create one.</td>
         </tr>
       </tbody>
     </table>
@@ -99,6 +103,10 @@
           <option value="30m">30 minutes</option>
           <option value="1h">1 hour</option>
         </select>
+      </div>
+      <div class="field">
+        <label for="volume-difference">Volume Difference</label>
+        <input type="number" id="volume-difference" name="volume_difference" required min="0" step="1" placeholder="10000">
       </div>
       <div class="field-row">
         <div class="field">

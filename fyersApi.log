@@ -1,0 +1,1 @@
+{"level":"ERROR","location":"[post_call:108] fyersModel","message":{"API":"/orders/sync","Error":{"code":-50,"message":"Request rejected: Order placement restricted. Algo orders are not allowed from this app Z0TMOUN1UQ-100","s":"error"}},"timestamp":"2026-06-02 12:50:24,322+0530","service":"FyersAPI"}

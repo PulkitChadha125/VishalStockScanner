@@ -4,7 +4,13 @@ from app import repository
 
 symbols_bp = Blueprint("symbols", __name__)
 
-REQUIRED_FIELDS = ("symbol_name", "time_frame", "stop_loss_pct", "target_pct")
+REQUIRED_FIELDS = (
+    "symbol_name",
+    "time_frame",
+    "volume_difference",
+    "stop_loss_pct",
+    "target_pct",
+)
 
 
 def _log_server_activity(description: str, details: dict | None = None):
@@ -29,15 +35,34 @@ def _parse_payload():
         return None, jsonify({"error": "Symbol name and time frame are required."}), 400
 
     try:
+        volume_difference = float(data["volume_difference"])
         stop_loss_pct = float(data["stop_loss_pct"])
         target_pct = float(data["target_pct"])
     except (TypeError, ValueError):
-        return None, jsonify({"error": "Stop loss and target must be numbers."}), 400
+        return (
+            None,
+            jsonify(
+                {
+                    "error": (
+                        "Volume difference, stop loss and target must be numbers."
+                    )
+                }
+            ),
+            400,
+        )
 
+    if volume_difference < 0:
+        return None, jsonify({"error": "Volume difference cannot be negative."}), 400
     if stop_loss_pct <= 0 or target_pct <= 0:
         return None, jsonify({"error": "Stop loss and target must be positive."}), 400
 
-    return (symbol_name, time_frame, stop_loss_pct, target_pct), None, None
+    return (
+        symbol_name,
+        time_frame,
+        volume_difference,
+        stop_loss_pct,
+        target_pct,
+    ), None, None
 
 
 @symbols_bp.route("", methods=["GET"])
@@ -59,9 +84,9 @@ def create_symbol():
     if err_response is not None:
         return err_response, status
 
-    symbol_name, time_frame, stop_loss_pct, target_pct = parsed
+    symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct = parsed
     symbol = repository.create_symbol(
-        symbol_name, time_frame, stop_loss_pct, target_pct
+        symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct
     )
     _log_server_activity(
         f"Symbol created: {symbol_name}",
@@ -76,9 +101,14 @@ def update_symbol(symbol_id):
     if err_response is not None:
         return err_response, status
 
-    symbol_name, time_frame, stop_loss_pct, target_pct = parsed
+    symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct = parsed
     symbol = repository.update_symbol(
-        symbol_id, symbol_name, time_frame, stop_loss_pct, target_pct
+        symbol_id,
+        symbol_name,
+        time_frame,
+        volume_difference,
+        stop_loss_pct,
+        target_pct,
     )
     if not symbol:
         return jsonify({"error": "Symbol not found."}), 404

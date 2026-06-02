@@ -15,6 +15,7 @@ def init_db(database_path: Path) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol_name TEXT NOT NULL,
                 time_frame TEXT NOT NULL,
+                volume_difference REAL NOT NULL DEFAULT 0,
                 stop_loss_pct REAL NOT NULL,
                 target_pct REAL NOT NULL
             );
@@ -60,8 +61,17 @@ def init_db(database_path: Path) -> None:
             )
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute(
+                "ALTER TABLE symbol_settings ADD COLUMN volume_difference REAL NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass
         conn.execute(
             "UPDATE strategy_settings SET max_trades = 2 WHERE id = 1 AND max_trades IS NULL"
+        )
+        conn.execute(
+            "UPDATE symbol_settings SET volume_difference = 0 WHERE volume_difference IS NULL"
         )
         conn.commit()
 
@@ -83,6 +93,7 @@ def symbol_row_to_dict(row: sqlite3.Row) -> dict:
         "id": row["id"],
         "symbol_name": row["symbol_name"],
         "time_frame": row["time_frame"],
+        "volume_difference": row["volume_difference"],
         "stop_loss_pct": row["stop_loss_pct"],
         "target_pct": row["target_pct"],
     }

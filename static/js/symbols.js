@@ -33,6 +33,10 @@ function formatPct(value) {
   return `${Number(value).toFixed(2)}%`;
 }
 
+function formatVolume(value) {
+  return Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
 function renderTable(symbols) {
   tbody.querySelectorAll("tr:not(#empty-row)").forEach((row) => row.remove());
 
@@ -48,6 +52,7 @@ function renderTable(symbols) {
     tr.innerHTML = `
       <td><strong>${escapeHtml(s.symbol_name)}</strong></td>
       <td>${escapeHtml(s.time_frame)}</td>
+      <td>${formatVolume(s.volume_difference)}</td>
       <td>${formatPct(s.stop_loss_pct)}</td>
       <td>${formatPct(s.target_pct)}</td>
       <td class="col-actions">
@@ -75,6 +80,7 @@ function openModal(title, data = null) {
   document.getElementById("symbol-id").value = data?.id ?? "";
   document.getElementById("symbol-name").value = data?.symbol_name ?? "";
   document.getElementById("time-frame").value = data?.time_frame ?? "";
+  document.getElementById("volume-difference").value = data?.volume_difference ?? "";
   document.getElementById("stop-loss").value = data?.stop_loss_pct ?? "";
   document.getElementById("target").value = data?.target_pct ?? "";
 
@@ -95,6 +101,7 @@ function getFormPayload() {
   return {
     symbol_name: document.getElementById("symbol-name").value.trim(),
     time_frame: document.getElementById("time-frame").value,
+    volume_difference: parseFloat(document.getElementById("volume-difference").value),
     stop_loss_pct: parseFloat(document.getElementById("stop-loss").value),
     target_pct: parseFloat(document.getElementById("target").value),
   };

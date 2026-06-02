@@ -3,6 +3,7 @@ const STRATEGY_API = "/api/strategy";
 const els = {
   apiStatus: document.getElementById("api-status"),
   strategyStatus: document.getElementById("strategy-status"),
+  balanceStatus: document.getElementById("balance-status"),
   btnLogin: document.getElementById("btn-api-login"),
   btnStart: document.getElementById("btn-strategy-start"),
   btnStop: document.getElementById("btn-strategy-stop"),
@@ -20,7 +21,10 @@ let state = {
   stop_time: "15:00",
   max_trades: 2,
   trades_taken_today: 0,
+  available_balance: null,
 };
+
+let pollTimer = null;
 
 window.showAppToast = function showAppToast(message) {
   const toast = document.getElementById("toast");
@@ -54,12 +58,20 @@ function renderState() {
   els.strategyStatus.querySelector(".status-pill__text").textContent = running
     ? "Running"
     : "Stopped";
+  const balText =
+    typeof state.available_balance === "number"
+      ? `Balance: ₹${state.available_balance.toLocaleString(undefined, {
+          maximumFractionDigits: 2,
+        })}`
+      : "Balance: --";
+  els.balanceStatus.querySelector(".status-pill__text").textContent = balText;
 
   els.btnLogin.textContent = apiOn ? "Logout" : "Login";
   els.btnLogin.classList.toggle("btn--outline", !apiOn);
   els.btnLogin.classList.toggle("btn--ghost", apiOn);
 
-  els.btnStart.disabled = !apiOn || running;
+  // Start can auto-login on click, so keep it enabled whenever strategy is not running.
+  els.btnStart.disabled = running;
   els.btnStop.disabled = !running;
 
   els.startTime.disabled = running;
@@ -77,6 +89,23 @@ function renderState() {
     els.hint.textContent = "Log in, set window & max trades, then Save and Start.";
   } else {
     els.hint.textContent = `${state.start_time}–${state.stop_time} · max ${max}/day · ${taken} used, ${tradesLeft} left (counts across all symbols).`;
+  }
+}
+
+function updatePolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  if (state.is_running) {
+    pollTimer = setInterval(async () => {
+      try {
+        state = await apiRequest(STRATEGY_API);
+        renderState();
+      } catch {
+        // ignore background poll errors
+      }
+    }, 1000);
   }
 }
 
@@ -99,6 +128,7 @@ async function loadStrategy() {
     els.stopTime.value = toInputTime(state.stop_time);
     els.maxTrades.value = state.max_trades ?? 2;
     renderState();
+    updatePolling();
   } catch {
     showAppToast("Could not load strategy settings.");
   }
@@ -122,6 +152,7 @@ async function saveSettings() {
       body: JSON.stringify(payload),
     });
     renderState();
+    updatePolling();
     showAppToast(
       `Settings saved: ${state.start_time}–${state.stop_time}, max ${state.max_trades} trades/day`
     );
@@ -150,6 +181,7 @@ els.btnLogin.addEventListener("click", async () => {
       showAppToast(body.message || "Login successful (stub).");
     }
     renderState();
+    updatePolling();
   } catch (err) {
     showAppToast(err.message);
   }
@@ -160,6 +192,7 @@ els.btnStart.addEventListener("click", async () => {
     const body = await apiRequest(`${STRATEGY_API}/start`, { method: "POST" });
     state = body;
     renderState();
+    updatePolling();
     showAppToast(body.message || "Strategy started.");
     if (window.AppLogger) AppLogger.log("strategy", "Strategy start button clicked");
   } catch (err) {
@@ -172,6 +205,7 @@ els.btnStop.addEventListener("click", async () => {
     const body = await apiRequest(`${STRATEGY_API}/stop`, { method: "POST" });
     state = body;
     renderState();
+    updatePolling();
     showAppToast(body.message || "Strategy stopped.");
     if (window.AppLogger) AppLogger.log("strategy", "Strategy stop button clicked");
   } catch (err) {

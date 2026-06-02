@@ -2,11 +2,15 @@ import re
 
 from flask import Blueprint, jsonify, request
 
-from app import repository
+from app import fyers_service, repository, strategy_engine
 
 strategy_bp = Blueprint("strategy", __name__)
 
 TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+def _console_error(context: str, err: str):
+    print(f"[Strategy:{context}] {err}", flush=True)
 
 
 def _log(description: str, details: dict | None = None):
@@ -28,14 +32,7 @@ def _validate_times(start_time: str, stop_time: str):
 
 @strategy_bp.route("", methods=["GET"])
 def get_strategy():
-    settings = repository.get_strategy_settings()
-    return jsonify(
-        {
-            **settings,
-            "trades_taken_today": repository.count_trades_today(),
-            "can_take_more_trades": repository.can_take_more_trades(),
-        }
-    )
+    return jsonify(strategy_engine.get_engine_status())
 
 
 @strategy_bp.route("/times", methods=["PUT"])
@@ -74,48 +71,70 @@ def update_times():
 
 @strategy_bp.route("/login", methods=["POST"])
 def login_api():
-    """Stub: broker API login will be wired here later."""
+    ok, err, balance = fyers_service.login_from_csv()
+    if not ok:
+        repository.set_api_connected(False)
+        _console_error("login", err or "Unknown login error")
+        _log("Broker API login failed", {"error": err})
+        return jsonify({"error": err or "Fyers login failed"}), 400
+
     settings = repository.set_api_connected(True)
-    _log("Broker API login requested (stub — not connected to broker yet)")
+    _log("Broker API login successful", {"available_balance": balance})
     return jsonify(
         {
             **settings,
-            "message": "Login UI ready. Broker API integration pending.",
+            "available_balance": balance,
+            "message": "Login successful.",
         }
     )
 
 
 @strategy_bp.route("/logout", methods=["POST"])
 def logout_api():
-    """Stub: disconnect from broker API."""
     if repository.get_strategy_settings()["is_running"]:
         return jsonify(
             {"error": "Stop the strategy before logging out."}
         ), 400
+    fyers_service.logout()
     settings = repository.set_api_connected(False)
-    _log("Broker API logout (stub)")
-    return jsonify({**settings, "message": "Logged out (stub)."})
+    _log("Broker API logout")
+    return jsonify({**settings, "available_balance": None, "message": "Logged out."})
 
 
 @strategy_bp.route("/start", methods=["POST"])
 def start_strategy():
     settings = repository.get_strategy_settings()
-    if not settings["api_connected"]:
-        return jsonify(
-            {"error": "Login to the broker API before starting the strategy."}
-        ), 400
-    if settings["is_running"]:
+    if not settings["api_connected"] or not fyers_service.is_connected():
+        # Auto-login when Start is clicked.
+        ok, err, balance = fyers_service.login_from_csv()
+        if not ok:
+            repository.set_api_connected(False)
+            _console_error("start-auto-login", err or "Unknown auto-login error")
+            _log("Auto-login failed during strategy start", {"error": err})
+            return jsonify({"error": err or "Fyers auto-login failed"}), 400
+        repository.set_api_connected(True)
+        settings = repository.get_strategy_settings()
+        _log("Auto-login successful on Start", {"available_balance": balance})
+    if settings["is_running"] and strategy_engine.is_engine_running():
         return jsonify({"error": "Strategy is already running."}), 400
 
-    settings = repository.set_strategy_running(True)
+    ok, err = strategy_engine.start()
+    if not ok:
+        _console_error("start-engine", err or "Unknown engine start error")
+        return jsonify({"error": err}), 400
+
+    status = strategy_engine.get_engine_status()
     _log(
-        f"Strategy started (scheduled window {settings['start_time']} – {settings['stop_time']})",
-        settings,
+        f"Strategy started ({status['start_time']} – {status['stop_time']})",
+        {
+            "max_trades": status["max_trades"],
+            "available_balance": status.get("available_balance"),
+        },
     )
     return jsonify(
         {
-            **settings,
-            "message": "Strategy started (stub — engine not connected yet).",
+            **status,
+            "message": "Strategy started.",
         }
     )
 
@@ -126,8 +145,17 @@ def stop_strategy():
     if not settings["is_running"]:
         return jsonify({"error": "Strategy is not running."}), 400
 
-    settings = repository.set_strategy_running(False)
+    strategy_engine.stop(square_off=True)
+    status = strategy_engine.get_engine_status()
     _log("Strategy stopped manually")
     return jsonify(
-        {**settings, "message": "Strategy stopped (stub)."}
+        {**status, "message": "Strategy stopped."}
     )
+
+
+@strategy_bp.route("/balance", methods=["GET"])
+def get_balance():
+    bal, detail = fyers_service.fetch_balance()
+    if bal is None and detail and detail.get("error"):
+        return jsonify({"error": detail["error"]}), 400
+    return jsonify({"available_balance": bal, "raw": detail})

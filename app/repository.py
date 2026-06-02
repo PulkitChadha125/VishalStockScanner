@@ -28,6 +28,7 @@ def get_symbol(symbol_id: int) -> dict | None:
 def create_symbol(
     symbol_name: str,
     time_frame: str,
+    volume_difference: float,
     stop_loss_pct: float,
     target_pct: float,
 ) -> dict:
@@ -35,10 +36,10 @@ def create_symbol(
         cur = conn.execute(
             """
             INSERT INTO symbol_settings
-                (symbol_name, time_frame, stop_loss_pct, target_pct)
-            VALUES (?, ?, ?, ?)
+                (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (symbol_name, time_frame, stop_loss_pct, target_pct),
+            (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct),
         )
         conn.commit()
         symbol_id = cur.lastrowid
@@ -49,6 +50,7 @@ def update_symbol(
     symbol_id: int,
     symbol_name: str,
     time_frame: str,
+    volume_difference: float,
     stop_loss_pct: float,
     target_pct: float,
 ) -> dict | None:
@@ -56,10 +58,17 @@ def update_symbol(
         cur = conn.execute(
             """
             UPDATE symbol_settings
-            SET symbol_name = ?, time_frame = ?, stop_loss_pct = ?, target_pct = ?
+            SET symbol_name = ?, time_frame = ?, volume_difference = ?, stop_loss_pct = ?, target_pct = ?
             WHERE id = ?
             """,
-            (symbol_name, time_frame, stop_loss_pct, target_pct, symbol_id),
+            (
+                symbol_name,
+                time_frame,
+                volume_difference,
+                stop_loss_pct,
+                target_pct,
+                symbol_id,
+            ),
         )
         conn.commit()
         if cur.rowcount == 0:
