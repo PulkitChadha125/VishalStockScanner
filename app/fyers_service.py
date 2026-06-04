@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import pandas as pd
+import pytz
 
 from app.config import BASE_DIR
 
@@ -20,6 +25,21 @@ from app.fyers_credentials import load_credentials
 _connected = False
 _last_balance: float | None = None
 _last_balance_detail: dict[str, Any] | None = None
+
+IST = pytz.timezone("Asia/Kolkata")
+VWAP_CACHE_TTL_SEC = 45
+
+# UI time frame -> FYERS history resolution (minutes)
+TIMEFRAME_TO_RESOLUTION: dict[str, str] = {
+    "1m": "1",
+    "3m": "3",
+    "5m": "5",
+    "15m": "15",
+    "30m": "30",
+    "1h": "60",
+}
+
+_vwap_cache: dict[tuple[str, str], tuple[float, float]] = {}
 
 
 def is_connected() -> bool:
@@ -186,3 +206,91 @@ def place_market_order(symbol_name: str, side: int, quantity: int = 1) -> dict:
     """side: 1 buy, -1 sell. order type 2 = market."""
     sym = to_fyers_symbol(symbol_name)
     return fyi.place_order(sym, quantity, 2, side, 0)
+
+
+def timeframe_to_resolution(time_frame: str) -> str | None:
+    return TIMEFRAME_TO_RESOLUTION.get((time_frame or "").strip().lower())
+
+
+def _today_ist_date():
+    return datetime.now(IST).date()
+
+
+def calculate_vwap_from_candles(df) -> float | None:
+    """Session VWAP from today's candles: sum(tp * vol) / sum(vol)."""
+    if df is None or df.empty:
+        return None
+
+    today = _today_ist_date()
+    df = df.copy()
+    df["day"] = df["date"].apply(
+        lambda x: x.date() if hasattr(x, "date") else pd.Timestamp(x, tz=IST).date()
+    )
+    session = df[df["day"] == today]
+    if session.empty:
+        session = df
+
+    vol = session["volume"].astype(float)
+    if vol.sum() <= 0:
+        return None
+
+    typical = (
+        session["high"].astype(float)
+        + session["low"].astype(float)
+        + session["close"].astype(float)
+    ) / 3.0
+    return float((typical * vol).sum() / vol.sum())
+
+
+def get_vwap(symbol_name: str, time_frame: str) -> float | None:
+    """
+    VWAP for symbol on configured UI timeframe (intraday session candles).
+    Cached briefly to limit history API calls.
+    """
+    if not is_connected():
+        return None
+
+    tf = (time_frame or "").strip().lower()
+    resolution = timeframe_to_resolution(tf)
+    if not resolution:
+        return None
+
+    cache_key = (symbol_name.upper(), tf)
+    now = time.time()
+    cached = _vwap_cache.get(cache_key)
+    if cached and (now - cached[1]) < VWAP_CACHE_TTL_SEC:
+        return cached[0]
+
+    sym = to_fyers_symbol(symbol_name)
+    try:
+        df = fyi.fetchOHLC(sym, resolution)
+        if df is None or getattr(df, "empty", True):
+            return None
+        vwap = calculate_vwap_from_candles(df)
+        if vwap is not None:
+            _vwap_cache[cache_key] = (vwap, now)
+        return vwap
+    except Exception:
+        return None
+
+
+def passes_vwap_filter(signal: str, entry_price: float, vwap: float) -> tuple[bool, str]:
+    """
+    BUY only if entry > VWAP.
+    SELL only if entry < VWAP.
+    """
+    if signal == "BUY":
+        if entry_price > vwap:
+            return True, ""
+        return (
+            False,
+            f"BUY blocked: entry {entry_price:.2f} <= VWAP {vwap:.2f}",
+        )
+    if signal == "SELL":
+        if entry_price < vwap:
+            return True, ""
+        return (
+            False,
+            f"SELL blocked: entry {entry_price:.2f} >= VWAP {vwap:.2f}",
+        )
+    return False, "Unknown signal"

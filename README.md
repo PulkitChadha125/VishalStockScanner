@@ -94,6 +94,7 @@ The strategy monitors **market depth** for a list of symbols. When buy/sell volu
 ```
 Vishal Project 1/
 ├── main.py                 # Application entry point
+├── run.bat                 # Windows one-click setup + run + open browser
 ├── requirements.txt
 ├── strategydescription.txt # Original strategy notes
 ├── app/
@@ -154,6 +155,20 @@ pip install -r requirements.txt
 ```
 
 ### 4. Run the application
+
+**Option A — double-click launcher (Windows):**
+
+```text
+run.bat
+```
+
+This will:
+- create `.venv` if missing
+- install `requirements.txt`
+- start `main.py`
+- open **http://127.0.0.1:5000** in your browser
+
+**Option B — manual:**
 
 ```bash
 python main.py
@@ -353,21 +368,28 @@ Each scan prints depth details per symbol in terminal:
 ### Entry scan frequency
 - Strategy scans all configured symbols every **1 second** while running.
 
-### Buy condition
+### Buy condition (volume depth)
 - For a symbol:
   - `buy_diff = bid_qty - ask_qty`
-  - If `buy_diff >= volume_difference`, signal = **BUY**
+  - If `buy_diff >= volume_difference`, raw signal = **BUY**
 
-### Sell condition
+### Sell condition (volume depth)
 - For a symbol:
   - `sell_diff = ask_qty - bid_qty`
-  - If `sell_diff >= volume_difference`, signal = **SELL**
+  - If `sell_diff >= volume_difference`, raw signal = **SELL**
+
+### VWAP filter (required before entry)
+- VWAP is calculated from FYERS historical candles on the symbol's configured **time frame** (1m, 3m, 5m, 15m, 30m, 1h).
+- Session VWAP formula: `sum(((high+low+close)/3) * volume) / sum(volume)` for today's candles.
+- **BUY entry allowed only if:** `entry_price > VWAP`
+- **SELL entry allowed only if:** `entry_price < VWAP`
+- If VWAP is unavailable or filter fails, trade is skipped and logged.
 
 ### One-trade-at-a-time condition
 - If one position is open, no new entries are taken in any symbol.
 
 ### Entry execution
-- On signal:
+- On valid signal + VWAP pass:
   - Place market order (BUY side=1, SELL side=-1)
   - Record order log with status `ENTRY`
   - Compute and store SL / target prices

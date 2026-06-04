@@ -154,6 +154,32 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         _log_app(f"Entry skipped — no price for {symbol['symbol_name']}")
         return
 
+    time_frame = symbol.get("time_frame", "5m")
+    vwap = fyers_service.get_vwap(symbol["symbol_name"], time_frame)
+    if vwap is None:
+        _log_app(
+            f"Entry skipped — VWAP unavailable for {symbol['symbol_name']} ({time_frame})",
+            {"entry_price": entry_price, "time_frame": time_frame},
+        )
+        print(
+            f"[VWAP] {symbol['symbol_name']} ({time_frame}): unavailable, entry skipped",
+            flush=True,
+        )
+        return
+
+    vwap_ok, vwap_reason = fyers_service.passes_vwap_filter(signal, entry_price, vwap)
+    print(
+        f"[VWAP] {symbol['symbol_name']} tf={time_frame} entry={entry_price:.2f} "
+        f"vwap={vwap:.2f} signal={signal} allowed={vwap_ok}",
+        flush=True,
+    )
+    if not vwap_ok:
+        _log_app(
+            f"{vwap_reason} on {symbol['symbol_name']}",
+            {"entry_price": entry_price, "vwap": vwap, "signal": signal},
+        )
+        return
+
     sl_pct = float(symbol["stop_loss_pct"])
     tgt_pct = float(symbol["target_pct"])
     sl_price, tgt_price = _calc_sl_target(entry_price, side, sl_pct, tgt_pct)
@@ -295,13 +321,26 @@ def _scan_for_entry():
             ask_qty,
             volume_diff,
         )
+        vwap_note = ""
+        if signal:
+            entry_preview = ask_price if signal == "BUY" else bid_price
+            vwap_val = fyers_service.get_vwap(sym["symbol_name"], sym["time_frame"])
+            if vwap_val is not None:
+                ok, _ = fyers_service.passes_vwap_filter(
+                    signal, entry_preview, vwap_val
+                )
+                vwap_note = f" vwap={vwap_val:.2f} vwap_ok={ok}"
+            else:
+                vwap_note = " vwap=NA"
+
         print(
             (
                 f"[DEPTH {tick_ts}] {sym['symbol_name']} "
                 f"bid_p={bid_price:.2f} ask_p={ask_price:.2f} "
                 f"bid_q={bid_qty:.2f} ask_q={ask_qty:.2f} "
                 f"sell_diff={sell_diff:.2f} buy_diff={buy_diff:.2f} "
-                f"threshold={volume_diff:.2f} signal={signal or 'NONE'}"
+                f"threshold={volume_diff:.2f} tf={sym['time_frame']} "
+                f"signal={signal or 'NONE'}{vwap_note}"
             ),
             flush=True,
         )
