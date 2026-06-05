@@ -1,13 +1,76 @@
 from flask import Blueprint, jsonify, request
 
-from app import repository
+from app import market_tz, repository
 
 logs_bp = Blueprint("logs", __name__)
 
 
 @logs_bp.route("/orders", methods=["GET"])
 def list_order_logs():
-    return jsonify(repository.list_order_logs())
+    """
+    Trade history with optional filters.
+    Query: symbol, from (YYYY-MM-DD), to (YYYY-MM-DD), today=1
+    """
+    symbol, date_from, date_to, today_only = _parse_log_filters()
+
+    trades = repository.list_trades(
+        symbol=symbol,
+        date_from=date_from,
+        date_to=date_to,
+        today_only=today_only,
+    )
+    summary = repository.get_trades_summary(
+        symbol=symbol,
+        date_from=date_from,
+        date_to=date_to,
+        today_only=today_only,
+    )
+    return jsonify(
+        {
+            "trades": trades,
+            "summary": summary,
+            "today_ist": market_tz.today_key_ist(),
+        }
+    )
+
+
+def _parse_log_filters():
+    symbol = request.args.get("symbol") or None
+    date_from = request.args.get("from") or None
+    date_to = request.args.get("to") or None
+    today_only = request.args.get("today", "").lower() in ("1", "true", "yes")
+    return symbol, date_from, date_to, today_only
+
+
+@logs_bp.route("/orders/<int:trade_id>", methods=["DELETE"])
+def delete_order_trade(trade_id: int):
+    if not repository.delete_trade(trade_id):
+        return jsonify({"error": "Trade not found."}), 404
+    return jsonify({"ok": True, "id": trade_id})
+
+
+@logs_bp.route("/orders", methods=["DELETE"])
+def delete_order_trades_bulk():
+    """Delete trades (and matching raw order logs) for current filter query."""
+    symbol, date_from, date_to, today_only = _parse_log_filters()
+    trades_deleted = repository.delete_trades(
+        symbol=symbol,
+        date_from=date_from,
+        date_to=date_to,
+        today_only=today_only,
+    )
+    orders_deleted = repository.delete_order_logs(
+        symbol=symbol,
+        date_from=date_from,
+        date_to=date_to,
+        today_only=today_only,
+    )
+    return jsonify(
+        {
+            "trades_deleted": trades_deleted,
+            "order_logs_deleted": orders_deleted,
+        }
+    )
 
 
 @logs_bp.route("/orders", methods=["POST"])
@@ -63,6 +126,19 @@ def create_order_log():
 @logs_bp.route("/app", methods=["GET"])
 def list_app_logs():
     return jsonify(repository.list_app_logs())
+
+
+@logs_bp.route("/app/<int:log_id>", methods=["DELETE"])
+def delete_app_log_entry(log_id: int):
+    if not repository.delete_app_log(log_id):
+        return jsonify({"error": "Log not found."}), 404
+    return jsonify({"ok": True, "id": log_id})
+
+
+@logs_bp.route("/app", methods=["DELETE"])
+def delete_all_app_logs():
+    deleted = repository.delete_all_app_logs()
+    return jsonify({"deleted": deleted})
 
 
 @logs_bp.route("/app", methods=["POST"])

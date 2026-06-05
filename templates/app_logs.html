@@ -12,6 +12,12 @@
 </header>
 
 <main class="main">
+  <section class="logs-toolbar">
+    <button type="button" class="btn btn--danger btn--sm" id="btn-delete-all-app">
+      Delete all app logs
+    </button>
+  </section>
+
   <section class="table-wrap table-wrap--wide">
     <table class="data-table" id="app-logs-table">
       <thead>
@@ -22,11 +28,12 @@
           <th>Page</th>
           <th>Element</th>
           <th>Details</th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody id="app-logs-tbody">
         <tr class="empty-row" id="app-empty-row">
-          <td colspan="6">No activity logged yet.</td>
+          <td colspan="7">No activity logged yet.</td>
         </tr>
       </tbody>
     </table>

@@ -11,6 +11,7 @@ const els = {
   startTime: document.getElementById("strategy-start-time"),
   stopTime: document.getElementById("strategy-stop-time"),
   maxTrades: document.getElementById("strategy-max-trades"),
+  timezone: document.getElementById("strategy-timezone"),
   hint: document.getElementById("strategy-hint"),
 };
 
@@ -20,6 +21,7 @@ let state = {
   start_time: "09:30",
   stop_time: "15:00",
   max_trades: 2,
+  timezone: "Asia/Kolkata",
   trades_taken_today: 0,
   available_balance: null,
 };
@@ -77,19 +79,31 @@ function renderState() {
   els.startTime.disabled = running;
   els.stopTime.disabled = running;
   els.maxTrades.disabled = running;
+  if (els.timezone) els.timezone.disabled = running;
   els.btnSaveSettings.disabled = running;
 
   const max = state.max_trades ?? 2;
   const taken = state.trades_taken_today ?? 0;
   const tradesLeft = Math.max(0, max - taken);
 
+  const tz =
+    els.timezone?.value || state.timezone || "Asia/Kolkata";
   if (running) {
-    els.hint.textContent = `Running · ${state.start_time}–${state.stop_time} · ${taken}/${max} trades today (${tradesLeft} left, all symbols).`;
+    els.hint.textContent = `Running · ${state.start_time}–${state.stop_time} (${tz}) · ${taken}/${max} trades today (${tradesLeft} left).`;
   } else if (!apiOn) {
-    els.hint.textContent = "Log in, set window & max trades, then Save and Start.";
+    els.hint.textContent = `Stop → edit start/stop/timezone → Save → Start. Window uses ${tz}.`;
   } else {
-    els.hint.textContent = `${state.start_time}–${state.stop_time} · max ${max}/day · ${taken} used, ${tradesLeft} left (counts across all symbols).`;
+    els.hint.textContent = `${state.start_time}–${state.stop_time} (${tz}) · max ${max}/day · ${taken} used, ${tradesLeft} left.`;
   }
+}
+
+function schedulePayload() {
+  return {
+    start_time: fromInputTime(els.startTime.value),
+    stop_time: fromInputTime(els.stopTime.value),
+    max_trades: parseInt(els.maxTrades.value, 10),
+    timezone: els.timezone?.value || "Asia/Kolkata",
+  };
 }
 
 function updatePolling() {
@@ -127,6 +141,12 @@ async function loadStrategy() {
     els.startTime.value = toInputTime(state.start_time);
     els.stopTime.value = toInputTime(state.stop_time);
     els.maxTrades.value = state.max_trades ?? 2;
+    if (els.timezone) {
+      const tz = state.timezone || "Asia/Kolkata";
+      const hasOption = [...els.timezone.options].some((o) => o.value === tz);
+      els.timezone.value = hasOption ? tz : "Asia/Kolkata";
+      state.timezone = els.timezone.value;
+    }
     renderState();
     updatePolling();
   } catch {
@@ -141,11 +161,8 @@ async function saveSettings() {
     return;
   }
 
-  const payload = {
-    start_time: fromInputTime(els.startTime.value),
-    stop_time: fromInputTime(els.stopTime.value),
-    max_trades: maxTrades,
-  };
+  const payload = schedulePayload();
+  payload.max_trades = maxTrades;
   try {
     state = await apiRequest(`${STRATEGY_API}/times`, {
       method: "PUT",
@@ -154,7 +171,7 @@ async function saveSettings() {
     renderState();
     updatePolling();
     showAppToast(
-      `Settings saved: ${state.start_time}–${state.stop_time}, max ${state.max_trades} trades/day`
+      `Settings saved: ${state.start_time}–${state.stop_time} (${state.timezone}), max ${state.max_trades}/day`
     );
     if (window.AppLogger) {
       AppLogger.log(
@@ -168,6 +185,13 @@ async function saveSettings() {
 }
 
 els.btnSaveSettings.addEventListener("click", saveSettings);
+
+if (els.timezone) {
+  els.timezone.addEventListener("change", () => {
+    state.timezone = els.timezone.value;
+    renderState();
+  });
+}
 
 els.btnLogin.addEventListener("click", async () => {
   try {
@@ -188,12 +212,29 @@ els.btnLogin.addEventListener("click", async () => {
 });
 
 els.btnStart.addEventListener("click", async () => {
+  const maxTrades = parseInt(els.maxTrades.value, 10);
+  if (!Number.isFinite(maxTrades) || maxTrades < 1) {
+    showAppToast("Max trades must be at least 1.");
+    return;
+  }
+
+  const payload = schedulePayload();
+  payload.max_trades = maxTrades;
+
   try {
-    const body = await apiRequest(`${STRATEGY_API}/start`, { method: "POST" });
+    const body = await apiRequest(`${STRATEGY_API}/start`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
     state = body;
     renderState();
     updatePolling();
-    showAppToast(body.message || "Strategy started.");
+    const msg =
+      body.message || "Strategy started (re-logged in to Fyers).";
+    showAppToast(msg);
+    if (body.outside_trading_window) {
+      window.alert(msg);
+    }
     if (window.AppLogger) AppLogger.log("strategy", "Strategy start button clicked");
   } catch (err) {
     showAppToast(err.message);

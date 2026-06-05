@@ -3,7 +3,8 @@ fyers-apiv3
 pyotp
 requests
 pytz
-pandas
-numpy
+# NumPy 2.x requires x86-64-v2 (SSE4.2+). Older servers/VMs need NumPy 1.x.
+numpy>=1.23.5,<2.0
+pandas>=1.5.0,<2.2
 websocket-client
 certifi

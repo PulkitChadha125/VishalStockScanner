@@ -206,4 +206,60 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+document.getElementById("btn-download-csv")?.addEventListener("click", () => {
+  window.location.href = `${API_BASE}/export.csv`;
+  showToast("Downloading symbol settings CSV…");
+  if (window.AppLogger) AppLogger.log("symbols", "Download CSV clicked");
+});
+
+const csvInput = document.getElementById("csv-file-input");
+
+document.getElementById("btn-load-csv")?.addEventListener("click", () => {
+  csvInput?.click();
+});
+
+csvInput?.addEventListener("change", async () => {
+  const file = csvInput.files?.[0];
+  csvInput.value = "";
+  if (!file) return;
+
+  if (!file.name.toLowerCase().endsWith(".csv")) {
+    showToast("Please select a .csv file.");
+    return;
+  }
+
+  if (
+    !confirm(
+      `Load "${file.name}"? This will replace all current symbol settings with the rows in the file.`
+    )
+  ) {
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const res = await fetch(`${API_BASE}/import.csv`, {
+      method: "POST",
+      body: formData,
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = body.errors?.length
+        ? body.errors.join(" ")
+        : body.error || "Could not load CSV.";
+      showToast(detail);
+      return;
+    }
+    showToast(body.message || `Loaded ${body.count} symbol(s).`);
+    if (window.AppLogger) {
+      AppLogger.log("symbols", body.message || "CSV loaded", { count: body.count });
+    }
+    await loadAndRender();
+  } catch {
+    showToast("Could not load CSV file.");
+  }
+});
+
 loadAndRender();

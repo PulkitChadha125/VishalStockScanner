@@ -33,6 +33,23 @@ def init_db(database_path: Path) -> None:
                 placed_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
 
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol_name TEXT NOT NULL,
+                side TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                entry_time TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                entry_status TEXT NOT NULL,
+                exit_time TEXT,
+                exit_price REAL,
+                exit_reason TEXT,
+                exit_status TEXT,
+                stop_loss REAL,
+                target REAL,
+                pnl REAL
+            );
+
             CREATE TABLE IF NOT EXISTS app_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 activity_type TEXT NOT NULL,
@@ -63,6 +80,12 @@ def init_db(database_path: Path) -> None:
             pass
         try:
             conn.execute(
+                "ALTER TABLE strategy_settings ADD COLUMN timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata'"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
                 "ALTER TABLE symbol_settings ADD COLUMN volume_difference REAL NOT NULL DEFAULT 0"
             )
         except sqlite3.OperationalError:
@@ -72,6 +95,13 @@ def init_db(database_path: Path) -> None:
         )
         conn.execute(
             "UPDATE symbol_settings SET volume_difference = 0 WHERE volume_difference IS NULL"
+        )
+        conn.execute(
+            """
+            UPDATE strategy_settings
+            SET timezone = 'Asia/Kolkata'
+            WHERE id = 1 AND (timezone IS NULL OR timezone = '')
+            """
         )
         conn.commit()
 
@@ -111,6 +141,26 @@ def order_row_to_dict(row: sqlite3.Row) -> dict:
         "stop_loss": row["stop_loss"],
         "target": row["target"],
         "placed_at": row["placed_at"],
+    }
+
+
+def trade_row_to_dict(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "symbol_name": row["symbol_name"],
+        "side": row["side"],
+        "quantity": row["quantity"],
+        "entry_time": row["entry_time"],
+        "entry_price": row["entry_price"],
+        "entry_status": row["entry_status"],
+        "exit_time": row["exit_time"],
+        "exit_price": row["exit_price"],
+        "exit_reason": row["exit_reason"],
+        "exit_status": row["exit_status"],
+        "stop_loss": row["stop_loss"],
+        "target": row["target"],
+        "pnl": row["pnl"],
+        "is_open": row["exit_time"] is None,
     }
 
 

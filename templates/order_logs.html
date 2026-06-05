@@ -8,28 +8,83 @@
     <span class="header__logo"></span>
     <h1>Order Logs</h1>
   </div>
-  <p class="header__subtitle">All orders placed from this application</p>
+  <p class="header__subtitle">Trade history with P&amp;L — includes broker-rejected orders tracked in backend</p>
 </header>
 
 <main class="main">
+  <section class="pnl-summary" id="pnl-summary" aria-live="polite">
+    <div class="pnl-summary__card pnl-summary__card--total">
+      <span class="pnl-summary__label">Total P&amp;L</span>
+      <span class="pnl-summary__value" id="summary-total-pnl">—</span>
+    </div>
+    <div class="pnl-summary__card">
+      <span class="pnl-summary__label">Closed trades</span>
+      <span class="pnl-summary__value" id="summary-closed">0</span>
+    </div>
+    <div class="pnl-summary__card">
+      <span class="pnl-summary__label">Open trades</span>
+      <span class="pnl-summary__value" id="summary-open">0</span>
+    </div>
+    <div class="pnl-summary__card">
+      <span class="pnl-summary__label">Wins / Losses</span>
+      <span class="pnl-summary__value" id="summary-wl">0 / 0</span>
+    </div>
+  </section>
+
+  <section class="logs-toolbar">
+    <button type="button" class="btn btn--danger btn--sm" id="btn-delete-shown">
+      Delete shown logs
+    </button>
+  </section>
+
+  <section class="order-filters">
+    <div class="order-filters__row">
+      <div class="field">
+        <label for="filter-symbol">Symbol</label>
+        <select id="filter-symbol">
+          <option value="">All symbols</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="filter-from">From date</label>
+        <input type="date" id="filter-from" />
+      </div>
+      <div class="field">
+        <label for="filter-to">To date</label>
+        <input type="date" id="filter-to" />
+      </div>
+      <div class="order-filters__actions">
+        <button type="button" class="btn btn--outline" id="filter-today"
+                aria-pressed="true" title="Show only today's trades (IST)">Today</button>
+        <button type="button" class="btn btn--primary" id="filter-apply">Apply</button>
+        <button type="button" class="btn btn--ghost" id="filter-clear">Clear</button>
+      </div>
+    </div>
+  </section>
+
   <section class="table-wrap table-wrap--wide">
     <table class="data-table" id="order-logs-table">
       <thead>
         <tr>
-          <th>Time</th>
+          <th>Entry time</th>
+          <th>Exit time</th>
           <th>Symbol</th>
           <th>Side</th>
-          <th>Type</th>
           <th>Qty</th>
-          <th>Price</th>
-          <th>Status</th>
-          <th>Stop Loss</th>
+          <th>Entry</th>
+          <th>Exit</th>
+          <th>Exit reason</th>
+          <th>Entry status</th>
+          <th>Exit status</th>
+          <th>Stop loss</th>
           <th>Target</th>
+          <th>P&amp;L</th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody id="order-logs-tbody">
         <tr class="empty-row" id="order-empty-row">
-          <td colspan="9">No orders logged yet.</td>
+          <td colspan="14">No trades in this period.</td>
         </tr>
       </tbody>
     </table>

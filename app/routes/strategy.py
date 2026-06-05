@@ -2,7 +2,7 @@ import re
 
 from flask import Blueprint, jsonify, request
 
-from app import fyers_service, repository, strategy_engine
+from app import fyers_service, market_tz, repository, strategy_engine
 
 strategy_bp = Blueprint("strategy", __name__)
 
@@ -32,18 +32,34 @@ def _validate_times(start_time: str, stop_time: str):
 
 @strategy_bp.route("", methods=["GET"])
 def get_strategy():
-    return jsonify(strategy_engine.get_engine_status())
+    status = strategy_engine.get_engine_status()
+    return jsonify({**status, "timezones": list(market_tz.COMMON_TIMEZONES)})
+
+
+def _schedule_error_if_running() -> str | None:
+    if repository.get_strategy_settings().get("is_running"):
+        return "Stop the strategy before changing schedule or timezone."
+    return None
 
 
 @strategy_bp.route("/times", methods=["PUT"])
 def update_times():
+    blocked = _schedule_error_if_running()
+    if blocked:
+        return jsonify({"error": blocked}), 400
+
     data = request.get_json(silent=True) or {}
     start_time = str(data.get("start_time", "")).strip()
     stop_time = str(data.get("stop_time", "")).strip()
+    timezone = str(data.get("timezone", market_tz.DEFAULT_TIMEZONE)).strip()
 
     error = _validate_times(start_time, stop_time)
     if error:
         return jsonify({"error": error}), 400
+
+    tz_err = market_tz.validate_timezone(timezone)
+    if tz_err:
+        return jsonify({"error": tz_err}), 400
 
     try:
         max_trades = int(data.get("max_trades", 2))
@@ -54,14 +70,15 @@ def update_times():
         return jsonify({"error": "Max trades must be at least 1."}), 400
 
     settings = repository.update_strategy_config(
-        start_time, stop_time, max_trades
+        start_time, stop_time, max_trades, timezone
     )
     trades_today = repository.count_trades_today()
     _log(
-        f"Strategy settings updated: {start_time}–{stop_time}, max {max_trades} trades/day",
+        f"Schedule updated: {start_time}–{stop_time} ({timezone}), max {max_trades}/day",
         {
             "start_time": start_time,
             "stop_time": stop_time,
+            "timezone": timezone,
             "max_trades": max_trades,
             "trades_taken_today": trades_today,
         },
@@ -103,20 +120,79 @@ def logout_api():
 
 @strategy_bp.route("/start", methods=["POST"])
 def start_strategy():
-    settings = repository.get_strategy_settings()
-    if not settings["api_connected"] or not fyers_service.is_connected():
-        # Auto-login when Start is clicked.
-        ok, err, balance = fyers_service.login_from_csv()
-        if not ok:
-            repository.set_api_connected(False)
-            _console_error("start-auto-login", err or "Unknown auto-login error")
-            _log("Auto-login failed during strategy start", {"error": err})
-            return jsonify({"error": err or "Fyers auto-login failed"}), 400
-        repository.set_api_connected(True)
+    data = request.get_json(silent=True) or {}
+
+    # Optional: save times from UI in same request as Start
+    start_time = str(data.get("start_time", "")).strip()
+    stop_time = str(data.get("stop_time", "")).strip()
+    timezone = str(data.get("timezone", "")).strip()
+    if start_time and stop_time:
+        error = _validate_times(start_time, stop_time)
+        if error:
+            return jsonify({"error": error}), 400
+        if timezone:
+            tz_err = market_tz.validate_timezone(timezone)
+            if tz_err:
+                return jsonify({"error": tz_err}), 400
+        try:
+            max_trades = int(data.get("max_trades", 2))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Max trades must be a whole number."}), 400
+        if max_trades < 1:
+            return jsonify({"error": "Max trades must be at least 1."}), 400
         settings = repository.get_strategy_settings()
-        _log("Auto-login successful on Start", {"available_balance": balance})
-    if settings["is_running"] and strategy_engine.is_engine_running():
-        return jsonify({"error": "Strategy is already running."}), 400
+        repository.update_strategy_config(
+            start_time,
+            stop_time,
+            max_trades,
+            timezone or settings.get("timezone", market_tz.DEFAULT_TIMEZONE),
+        )
+
+    # Clear stale DB "running" flag if engine thread is not alive
+    strategy_engine.get_engine_status()
+
+    if strategy_engine.is_engine_running():
+        return jsonify(
+            {"error": "Strategy is already running. Click Stop first."}
+        ), 400
+
+    # Always re-login when Start is clicked (fresh Fyers session)
+    ok, err, balance = fyers_service.login_from_csv()
+    if not ok:
+        repository.set_api_connected(False)
+        _console_error("start-auto-login", err or "Unknown auto-login error")
+        _log("Auto-login failed during strategy start", {"error": err})
+        return jsonify({"error": err or "Fyers auto-login failed"}), 400
+    repository.set_api_connected(True)
+    _log("Re-login on Start successful", {"available_balance": balance})
+
+    settings = repository.get_strategy_settings()
+    start_time = start_time or settings["start_time"]
+    stop_time = stop_time or settings["stop_time"]
+
+    if not strategy_engine.is_in_trading_window(start_time, stop_time):
+        symbols = repository.list_symbols()
+        if symbols:
+            strategy_engine.probe_symbol_market_data()
+        tz_label = market_tz.timezone_label()
+        now_local = market_tz.now_hhmm()
+        msg = (
+            f"API logged in successfully. Cannot trade now — outside trading window "
+            f"({start_time}–{stop_time} {tz_label}, now {now_local}). "
+            "Market data was refreshed once; click Start again during the window."
+        )
+        _log(msg, {"start_time": start_time, "stop_time": stop_time})
+        status = strategy_engine.get_engine_status()
+        return jsonify(
+            {
+                **status,
+                "api_connected": True,
+                "is_running": False,
+                "outside_trading_window": True,
+                "available_balance": balance,
+                "message": msg,
+            }
+        )
 
     ok, err = strategy_engine.start()
     if not ok:
@@ -134,16 +210,21 @@ def start_strategy():
     return jsonify(
         {
             **status,
-            "message": "Strategy started.",
+            "outside_trading_window": False,
+            "message": "Logged in and strategy started. Fetching market depth every second.",
         }
     )
 
 
 @strategy_bp.route("/stop", methods=["POST"])
 def stop_strategy():
-    settings = repository.get_strategy_settings()
-    if not settings["is_running"]:
-        return jsonify({"error": "Strategy is not running."}), 400
+    strategy_engine.get_engine_status()
+    if not strategy_engine.is_engine_running():
+        repository.set_strategy_running(False)
+        status = strategy_engine.get_engine_status()
+        return jsonify(
+            {**status, "message": "Strategy was already stopped."}
+        )
 
     strategy_engine.stop(square_off=True)
     status = strategy_engine.get_engine_status()

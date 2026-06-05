@@ -25,7 +25,17 @@ def create_app(config_class=Config):
     app.register_blueprint(strategy_bp, url_prefix="/api/strategy")
     app.register_blueprint(pages_bp)
 
+    # If app restarted, clear stale "running" when engine thread is gone
+    from app import strategy_engine
+
+    strategy_engine.get_engine_status()
+
     # Background scheduler: auto-login at 9:00 and auto-start at configured start_time.
     start_scheduler()
+
+    # WebSocket fetch + console printing run on a dedicated worker thread (not Flask).
+    from app import fyers_market_ws
+
+    fyers_market_ws.ensure_worker()
 
     return app

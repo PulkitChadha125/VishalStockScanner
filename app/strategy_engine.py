@@ -7,14 +7,11 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, time as dt_time
 
-import pytz
-
-from app import fyers_service, repository
-
-IST = pytz.timezone("Asia/Kolkata")
+from app import fyers_service, market_tz, repository
 
 _stop_event = threading.Event()
 _thread: threading.Thread | None = None
@@ -28,6 +25,7 @@ DEFAULT_QTY = int(os.environ.get("STRATEGY_DEFAULT_QTY", "1"))
 
 @dataclass
 class OpenPosition:
+    trade_id: int
     symbol_name: str
     fyers_symbol: str
     side: int  # 1=BUY, -1=SELL
@@ -39,19 +37,54 @@ class OpenPosition:
     stop_loss_price: float
     target_price: float
     opened_at: str
+    entry_status: str
 
 
-def _now_ist() -> datetime:
-    return datetime.now(IST)
+def _now_market() -> datetime:
+    return market_tz.now()
 
 
 def _in_trading_window(start_hhmm: str, stop_hhmm: str) -> bool:
-    now = _now_ist().time()
+    now = _now_market().time()
     sh, sm = map(int, start_hhmm.split(":"))
     eh, em = map(int, stop_hhmm.split(":"))
     start = dt_time(sh, sm)
     end = dt_time(eh, em)
     return start <= now < end
+
+
+def is_in_trading_window(
+    start_hhmm: str | None = None, stop_hhmm: str | None = None
+) -> bool:
+    settings = repository.get_strategy_settings()
+    return _in_trading_window(
+        start_hhmm or settings["start_time"],
+        stop_hhmm or settings["stop_time"],
+    )
+
+
+def probe_symbol_market_data() -> list[dict]:
+    """Depth probe via WebSocket cache or one REST call per symbol."""
+    rows: list[dict] = []
+    symbols = repository.list_symbols()
+    ws_active = fyers_service.is_market_ws_active()
+    for i, sym in enumerate(symbols):
+        name = sym["symbol_name"]
+        if not ws_active and i > 0:
+            time.sleep(fyers_service.DEPTH_MIN_INTERVAL_SEC)
+        depth = fyers_service.get_market_depth(name, max_age_sec=30)
+        if not depth and not ws_active:
+            depth = fyers_service.fetch_market_depth_immediate(name)
+        rows.append({"symbol_name": name, "depth": depth})
+        if depth and not depth.get("error"):
+            print(
+                f"[PROBE] {name} bid={depth.get('bid_price')} ask={depth.get('ask_price')} "
+                f"bid_q_total={depth.get('bid_qty')} ask_q_total={depth.get('ask_qty')}",
+                flush=True,
+            )
+        else:
+            print(f"[PROBE] {name}: {depth.get('error') if depth else 'no data'}", flush=True)
+    return rows
 
 
 def _log_app(description: str, details: dict | None = None):
@@ -95,6 +128,19 @@ def _calc_sl_target(entry: float, side: int, sl_pct: float, tgt_pct: float):
     return sl, tgt
 
 
+def _print_trade_result(trade: dict):
+    print(
+        (
+            f"[TRADE] {trade['symbol_name']} {trade['side']} "
+            f"entry={trade['entry_time']} @ {trade['entry_price']:.2f} "
+            f"exit={trade['exit_time']} @ {trade['exit_price']:.2f} "
+            f"reason={trade['exit_reason']} pnl={trade['pnl']:.2f} "
+            f"(entry={trade['entry_status']}, exit={trade['exit_status']})"
+        ),
+        flush=True,
+    )
+
+
 def get_open_position() -> dict | None:
     with _lock:
         return asdict(_open_position) if _open_position else None
@@ -133,9 +179,12 @@ def is_engine_running() -> bool:
     return _thread is not None and _thread.is_alive() and not _stop_event.is_set()
 
 
-def _evaluate_signal(bid_qty: float, ask_qty: float, volume_diff: float) -> str | None:
-    sell_diff = ask_qty - bid_qty
-    buy_diff = bid_qty - ask_qty
+def _evaluate_signal(
+    total_bid_qty: float, total_ask_qty: float, volume_diff: float
+) -> str | None:
+    """Compare summed bid-book qty vs summed ask-book qty (all depth levels)."""
+    sell_diff = total_ask_qty - total_bid_qty
+    buy_diff = total_bid_qty - total_ask_qty
     if sell_diff >= volume_diff:
         return "SELL"
     if buy_diff >= volume_diff:
@@ -185,23 +234,38 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
     sl_price, tgt_price = _calc_sl_target(entry_price, side, sl_pct, tgt_pct)
 
     qty = DEFAULT_QTY
+    entry_time = _now_market().strftime("%Y-%m-%d %H:%M:%S")
     resp = fyers_service.place_market_order(symbol["symbol_name"], side, qty)
+    entry_status = fyers_service.order_status_label(resp)
     _log_app(
-        f"ENTRY {signal} {symbol['symbol_name']} @ {entry_price:.2f}",
+        f"ENTRY {signal} {symbol['symbol_name']} @ {entry_price:.2f} ({entry_status})",
         {"response": resp, "depth": depth},
     )
     _log_order(
         symbol["symbol_name"],
         signal,
-        "ENTRY",
+        f"ENTRY_{entry_status}",
         entry_price,
         qty,
         stop_loss=sl_price,
         target=tgt_price,
     )
 
+    trade = repository.create_trade(
+        symbol_name=symbol["symbol_name"],
+        side=signal,
+        quantity=qty,
+        entry_price=entry_price,
+        entry_status=entry_status,
+        stop_loss=sl_price,
+        target=tgt_price,
+        entry_time=entry_time,
+    )
+
+    # Track position in backend even when Fyers rejects the order (paper SL/target).
     with _lock:
         _open_position = OpenPosition(
+            trade_id=trade["id"],
             symbol_name=symbol["symbol_name"],
             fyers_symbol=depth["symbol"],
             side=side,
@@ -212,12 +276,13 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
             target_pct=tgt_pct,
             stop_loss_price=sl_price,
             target_price=tgt_price,
-            opened_at=_now_ist().isoformat(),
+            opened_at=entry_time,
+            entry_status=entry_status,
         )
         _last_signal = f"{signal} {symbol['symbol_name']}"
 
 
-def _exit_trade(reason: str):
+def _exit_trade(reason: str, exit_price: float | None = None):
     global _open_position
 
     with _lock:
@@ -227,14 +292,21 @@ def _exit_trade(reason: str):
         _open_position = None
 
     exit_side = -pos.side
-    ltp = fyers_service.get_ltp(pos.symbol_name) or pos.entry_price
+    ltp = exit_price if exit_price is not None else (
+        fyers_service.get_ltp(pos.symbol_name) or pos.entry_price
+    )
+    exit_time = _now_market().strftime("%Y-%m-%d %H:%M:%S")
     resp = fyers_service.place_market_order(
         pos.symbol_name, exit_side, pos.quantity
     )
-    status = f"EXIT_{reason}"
+    exit_status = fyers_service.order_status_label(resp)
+    pnl = repository.calc_trade_pnl(
+        pos.side, pos.entry_price, ltp, pos.quantity
+    )
+    status = f"EXIT_{reason}_{exit_status}"
     _log_app(
-        f"{status} {pos.side_label} {pos.symbol_name} @ {ltp:.2f}",
-        {"response": resp, "position": asdict(pos)},
+        f"{status} {pos.side_label} {pos.symbol_name} @ {ltp:.2f} pnl={pnl:.2f}",
+        {"response": resp, "position": asdict(pos), "pnl": pnl},
     )
     _log_order(
         pos.symbol_name,
@@ -245,6 +317,17 @@ def _exit_trade(reason: str):
         stop_loss=pos.stop_loss_price,
         target=pos.target_price,
     )
+
+    trade = repository.close_trade(
+        trade_id=pos.trade_id,
+        exit_price=ltp,
+        exit_reason=reason,
+        exit_status=exit_status,
+        pnl=pnl,
+        exit_time=exit_time,
+    )
+    if trade:
+        _print_trade_result(trade)
 
 
 def _monitor_open_position():
@@ -259,14 +342,14 @@ def _monitor_open_position():
 
     if pos.side == 1:
         if ltp <= pos.stop_loss_price:
-            _exit_trade("SL")
+            _exit_trade("SL", exit_price=ltp)
         elif ltp >= pos.target_price:
-            _exit_trade("TARGET")
+            _exit_trade("TARGET", exit_price=ltp)
     else:
         if ltp >= pos.stop_loss_price:
-            _exit_trade("SL")
+            _exit_trade("SL", exit_price=ltp)
         elif ltp <= pos.target_price:
-            _exit_trade("TARGET")
+            _exit_trade("TARGET", exit_price=ltp)
 
 
 def _scan_for_entry():
@@ -291,22 +374,36 @@ def _scan_for_entry():
     if not symbols:
         return
 
-    tick_ts = _now_ist().strftime("%H:%M:%S")
+    tick_ts = market_tz.now_ist().strftime("%H:%M:%S")
+    symbol_names = [s["symbol_name"] for s in symbols]
+    ws_active = fyers_service.is_market_ws_active()
+    refreshed = fyers_service.tick_depth_refresh(symbol_names)
+
     for sym in symbols:
-        depth = fyers_service.get_market_depth(sym["symbol_name"])
+        name = sym["symbol_name"]
+        depth = fyers_service.get_market_depth(name)
         if not depth:
-            print(
-                f"[DEPTH {tick_ts}] {sym['symbol_name']}: no response",
-                flush=True,
+            wait_msg = (
+                "waiting for websocket feed"
+                if ws_active
+                else "waiting for cache (1 symbol/sec REST refresh)"
             )
+            print(f"[DEPTH {tick_ts}] {name}: {wait_msg}", flush=True)
             continue
 
         if depth.get("error"):
             print(
-                f"[DEPTH {tick_ts}] {sym['symbol_name']}: error={depth.get('error')}",
+                f"[DEPTH {tick_ts}] {name}: error={depth.get('error')}",
                 flush=True,
             )
             continue
+
+        if depth.get("source") == "websocket":
+            cache_note = f" ws age={depth.get('cache_age_sec', '?')}s"
+        elif name == refreshed:
+            cache_note = " fresh"
+        else:
+            cache_note = f" cached={depth.get('cache_age_sec', '?')}s"
 
         bid_qty = float(depth["bid_qty"])
         ask_qty = float(depth["ask_qty"])
@@ -335,9 +432,9 @@ def _scan_for_entry():
 
         print(
             (
-                f"[DEPTH {tick_ts}] {sym['symbol_name']} "
+                f"[DEPTH {tick_ts}] {name}{cache_note} "
                 f"bid_p={bid_price:.2f} ask_p={ask_price:.2f} "
-                f"bid_q={bid_qty:.2f} ask_q={ask_qty:.2f} "
+                f"bid_q_total={bid_qty:.2f} ask_q_total={ask_qty:.2f} "
                 f"sell_diff={sell_diff:.2f} buy_diff={buy_diff:.2f} "
                 f"threshold={volume_diff:.2f} tf={sym['time_frame']} "
                 f"signal={signal or 'NONE'}{vwap_note}"
@@ -353,7 +450,7 @@ def _scan_for_entry():
 
         _log_app(
             f"Signal {signal} on {sym['symbol_name']}: "
-            f"bid={depth['bid_qty']} ask={depth['ask_qty']} "
+            f"bid_total={depth['bid_qty']} ask_total={depth['ask_qty']} "
             f"need>={sym['volume_difference']}",
             {"depth": depth},
         )
@@ -368,7 +465,7 @@ def _tick():
     if not settings.get("is_running"):
         return
 
-    _last_tick_at = _now_ist().strftime("%Y-%m-%d %H:%M:%S")
+    _last_tick_at = _now_market().strftime("%Y-%m-%d %H:%M:%S")
 
     if not fyers_service.is_connected():
         _log_app("Engine tick skipped — Fyers not connected")
@@ -390,6 +487,7 @@ def _tick():
 
 def _run_loop():
     global _thread
+    fyers_service.clear_depth_cache()
     _log_app("Strategy engine thread started")
     tick_count = 0
     while not _stop_event.is_set():
@@ -415,6 +513,8 @@ def start() -> tuple[bool, str]:
     symbols = repository.list_symbols()
     if not symbols:
         return False, "Add at least one symbol before starting."
+
+    fyers_service.sync_market_websocket()
 
     if is_engine_running():
         return False, "Strategy engine is already running."

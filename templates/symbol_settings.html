@@ -41,6 +41,20 @@
         <input type="number" id="strategy-max-trades" value="2" min="1" max="99" step="1" required
                title="Max trades per day (all symbols)">
       </label>
+      <label class="cp-field cp-field--tz" for="strategy-timezone">
+        <span class="cp-field__label">Timezone</span>
+        <select id="strategy-timezone" title="Trading window uses this timezone">
+          <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+          <option value="Asia/Dubai">Asia/Dubai</option>
+          <option value="Asia/Singapore">Asia/Singapore</option>
+          <option value="Asia/Tokyo">Asia/Tokyo</option>
+          <option value="Europe/London">Europe/London</option>
+          <option value="Europe/Berlin">Europe/Berlin</option>
+          <option value="America/New_York">America/New_York</option>
+          <option value="America/Chicago">America/Chicago</option>
+          <option value="UTC">UTC</option>
+        </select>
+      </label>
       <button type="button" id="btn-save-settings" class="btn btn--ghost btn--xs" data-log-label="Click: Save strategy settings">Save</button>
     </div>
 
@@ -54,8 +68,11 @@
 </section>
 
 <main class="main">
-  <section class="toolbar">
+  <section class="toolbar toolbar--symbols">
     <button type="button" id="btn-add" class="btn btn--primary" data-log-label="Click: Add Symbol">+ Add Symbol</button>
+    <button type="button" id="btn-download-csv" class="btn btn--outline" data-log-label="Click: Download CSV">Download CSV</button>
+    <button type="button" id="btn-load-csv" class="btn btn--outline" data-log-label="Click: Load CSV">Load CSV</button>
+    <input type="file" id="csv-file-input" accept=".csv,text/csv" hidden>
   </section>
 
   <section class="table-wrap">
@@ -97,9 +114,13 @@
         <select id="time-frame" name="time_frame" required>
           <option value="">Select time frame</option>
           <option value="1m">1 minute</option>
+          <option value="2m">2 minutes</option>
           <option value="3m">3 minutes</option>
+          <option value="4m">4 minutes</option>
           <option value="5m">5 minutes</option>
+          <option value="10m">10 minutes</option>
           <option value="15m">15 minutes</option>
+          <option value="20m">20 minutes</option>
           <option value="30m">30 minutes</option>
           <option value="1h">1 hour</option>
         </select>

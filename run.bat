@@ -36,6 +36,9 @@ if errorlevel 1 (
 echo Installing / updating dependencies...
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+echo.
+echo Ensuring NumPy 1.x (compatible with older CPUs / Server 2012)...
+pip install "numpy>=1.23.5,<2.0" "pandas>=1.5.0,<2.2" --force-reinstall
 if errorlevel 1 (
     echo Failed to install requirements.
     pause

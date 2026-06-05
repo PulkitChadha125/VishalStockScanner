@@ -1,6 +1,9 @@
-from flask import Blueprint, jsonify, request
+from datetime import datetime
 
-from app import repository
+from flask import Blueprint, Response, jsonify, request
+
+from app import fyers_service, repository
+from app.symbols_csv import parse_symbols_csv, symbols_to_csv
 
 symbols_bp = Blueprint("symbols", __name__)
 
@@ -70,6 +73,58 @@ def list_symbols():
     return jsonify(repository.list_symbols())
 
 
+@symbols_bp.route("/export.csv", methods=["GET"])
+def export_symbols_csv():
+    symbols = repository.list_symbols()
+    csv_text = symbols_to_csv(symbols)
+    filename = f"symbol_settings_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return Response(
+        csv_text,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@symbols_bp.route("/import.csv", methods=["POST"])
+def import_symbols_csv():
+    if repository.get_strategy_settings().get("is_running"):
+        return jsonify(
+            {"error": "Stop the strategy before loading a CSV file."}
+        ), 400
+
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"error": "No CSV file selected."}), 400
+
+    if not upload.filename.lower().endswith(".csv"):
+        return jsonify({"error": "Please upload a .csv file."}), 400
+
+    rows, errors = parse_symbols_csv(upload.read())
+    if errors:
+        return jsonify(
+            {
+                "error": "; ".join(errors),
+                "errors": errors,
+            }
+        ), 400
+    if not rows:
+        return jsonify({"error": "No valid symbol rows in CSV."}), 400
+
+    symbols = repository.replace_all_symbols(rows)
+    fyers_service.sync_market_websocket()
+    _log_server_activity(
+        f"Loaded {len(symbols)} symbol(s) from CSV",
+        {"filename": upload.filename, "count": len(symbols)},
+    )
+    return jsonify(
+        {
+            "message": f"Loaded {len(symbols)} symbol(s) from CSV.",
+            "symbols": symbols,
+            "count": len(symbols),
+        }
+    )
+
+
 @symbols_bp.route("/<int:symbol_id>", methods=["GET"])
 def get_symbol(symbol_id):
     symbol = repository.get_symbol(symbol_id)
@@ -88,6 +143,7 @@ def create_symbol():
     symbol = repository.create_symbol(
         symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct
     )
+    fyers_service.sync_market_websocket()
     _log_server_activity(
         f"Symbol created: {symbol_name}",
         {"symbol_id": symbol["id"], "time_frame": time_frame},
@@ -112,6 +168,7 @@ def update_symbol(symbol_id):
     )
     if not symbol:
         return jsonify({"error": "Symbol not found."}), 404
+    fyers_service.sync_market_websocket()
     _log_server_activity(
         f"Symbol updated: {symbol_name}",
         {"symbol_id": symbol_id},
@@ -124,6 +181,7 @@ def delete_symbol(symbol_id):
     symbol = repository.get_symbol(symbol_id)
     if not repository.delete_symbol(symbol_id):
         return jsonify({"error": "Symbol not found."}), 404
+    fyers_service.sync_market_websocket()
     name = symbol["symbol_name"] if symbol else str(symbol_id)
     _log_server_activity(f"Symbol deleted: {name}", {"symbol_id": symbol_id})
     return jsonify({"message": "Deleted successfully."})
