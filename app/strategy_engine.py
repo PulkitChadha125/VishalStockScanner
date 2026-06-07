@@ -79,7 +79,7 @@ def probe_symbol_market_data() -> list[dict]:
         if depth and not depth.get("error"):
             print(
                 f"[PROBE] {name} bid={depth.get('bid_price')} ask={depth.get('ask_price')} "
-                f"bid_q_total={depth.get('bid_qty')} ask_q_total={depth.get('ask_qty')}",
+                f"book_buy={depth.get('bid_qty')} book_sell={depth.get('ask_qty')}",
                 flush=True,
             )
         else:
@@ -398,6 +398,13 @@ def _scan_for_entry():
             )
             continue
 
+        if depth.get("qty_source") != "full_book":
+            print(
+                f"[DEPTH {tick_ts}] {name}: waiting for full book totals (tot_buy/tot_sell)",
+                flush=True,
+            )
+            continue
+
         if depth.get("source") == "websocket":
             cache_note = f" ws age={depth.get('cache_age_sec', '?')}s"
         elif name == refreshed:
@@ -434,9 +441,9 @@ def _scan_for_entry():
             (
                 f"[DEPTH {tick_ts}] {name}{cache_note} "
                 f"bid_p={bid_price:.2f} ask_p={ask_price:.2f} "
-                f"bid_q_total={bid_qty:.2f} ask_q_total={ask_qty:.2f} "
-                f"sell_diff={sell_diff:.2f} buy_diff={buy_diff:.2f} "
-                f"threshold={volume_diff:.2f} tf={sym['time_frame']} "
+                f"book_buy={bid_qty:.0f} book_sell={ask_qty:.0f} "
+                f"sell_diff={sell_diff:.0f} buy_diff={buy_diff:.0f} "
+                f"threshold={volume_diff:.0f} tf={sym['time_frame']} "
                 f"signal={signal or 'NONE'}{vwap_note}"
             ),
             flush=True,
@@ -450,7 +457,7 @@ def _scan_for_entry():
 
         _log_app(
             f"Signal {signal} on {sym['symbol_name']}: "
-            f"bid_total={depth['bid_qty']} ask_total={depth['ask_qty']} "
+            f"book_buy={depth['bid_qty']} book_sell={depth['ask_qty']} "
             f"need>={sym['volume_difference']}",
             {"depth": depth},
         )

@@ -68,8 +68,8 @@ def init_db(database_path: Path) -> None:
                 api_connected INTEGER NOT NULL DEFAULT 0
             );
 
-            INSERT OR IGNORE INTO strategy_settings (id, start_time, stop_time)
-            VALUES (1, '09:30', '15:00');
+            INSERT OR IGNORE INTO strategy_settings (id, start_time, stop_time, timezone)
+            VALUES (1, '09:30', '15:00', 'Asia/Kolkata');
             """
         )
         try:
@@ -103,6 +103,28 @@ def init_db(database_path: Path) -> None:
             WHERE id = 1 AND (timezone IS NULL OR timezone = '')
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        migrated = conn.execute(
+            "SELECT 1 FROM app_meta WHERE key = 'default_timezone_ist'"
+        ).fetchone()
+        if not migrated:
+            conn.execute(
+                """
+                UPDATE strategy_settings
+                SET timezone = 'Asia/Kolkata'
+                WHERE id = 1 AND timezone = 'Asia/Dubai'
+                """
+            )
+            conn.execute(
+                "INSERT INTO app_meta (key, value) VALUES ('default_timezone_ist', '1')"
+            )
         conn.commit()
 
 

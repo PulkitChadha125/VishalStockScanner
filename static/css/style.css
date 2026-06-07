@@ -822,3 +822,123 @@ body {
 .data-table tr.row--open td {
   opacity: 0.85;
 }
+
+/* Live market book panel (Symbol Settings) */
+.market-book {
+  margin-top: 2rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.15rem 1.25rem 1.25rem;
+}
+
+.market-book__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.market-book__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.market-book__subtitle {
+  margin: 0.35rem 0 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  max-width: 36rem;
+}
+
+.market-book__updated {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.market-book__banner {
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius);
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.market-book__banner--closed {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  color: #facc15;
+}
+
+.market-book__status {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.qty-buy {
+  color: #4ade80;
+  font-variant-numeric: tabular-nums;
+}
+
+.qty-sell {
+  color: #f87171;
+  font-variant-numeric: tabular-nums;
+}
+
+.book-mix {
+  min-width: 140px;
+}
+
+.book-mix__bar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(239, 68, 68, 0.25);
+  margin-bottom: 0.25rem;
+}
+
+.book-mix__buy {
+  display: block;
+  background: #22c55e;
+  height: 100%;
+}
+
+.book-mix__sell {
+  display: block;
+  background: #ef4444;
+  height: 100%;
+}
+
+.book-mix__label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.book-signal {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.2rem 0.45rem;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+
+.book-signal--buy {
+  background: rgba(34, 197, 94, 0.18);
+  color: #4ade80;
+}
+
+.book-signal--sell {
+  background: rgba(239, 68, 68, 0.18);
+  color: #f87171;
+}
+
+.book-signal--none {
+  color: var(--text-muted);
+  font-weight: 500;
+}

@@ -2,7 +2,7 @@ from datetime import datetime
 
 from flask import Blueprint, Response, jsonify, request
 
-from app import fyers_service, repository
+from app import fyers_service, market_tz, repository
 from app.symbols_csv import parse_symbols_csv, symbols_to_csv
 
 symbols_bp = Blueprint("symbols", __name__)
@@ -71,6 +71,115 @@ def _parse_payload():
 @symbols_bp.route("", methods=["GET"])
 def list_symbols():
     return jsonify(repository.list_symbols())
+
+
+@symbols_bp.route("/market-book", methods=["GET"])
+def market_book_snapshot():
+    """Lightweight read of WebSocket cache — full book buy/sell totals per symbol."""
+    symbols = repository.list_symbols()
+    session = market_tz.session_status()
+
+    def _closed_payload(**extra):
+        return jsonify(
+            {
+                "connected": fyers_service.is_connected(),
+                "ws_active": fyers_service.is_market_ws_active(),
+                "market_open": False,
+                "market_message": session["message"],
+                "start_time": session["start_time"],
+                "stop_time": session["stop_time"],
+                "timezone": session["timezone"],
+                "now": session["now"],
+                "updated_at": market_tz.now_ist().strftime("%H:%M:%S"),
+                "symbols": [
+                    {"symbol_name": s["symbol_name"], "status": "market_closed"}
+                    for s in symbols
+                ],
+                **extra,
+            }
+        )
+
+    if not session["market_open"]:
+        return _closed_payload()
+
+    if not fyers_service.is_connected():
+        return jsonify(
+            {
+                "connected": False,
+                "ws_active": False,
+                "market_open": True,
+                "market_message": "",
+                "start_time": session["start_time"],
+                "stop_time": session["stop_time"],
+                "timezone": session["timezone"],
+                "now": session["now"],
+                "updated_at": market_tz.now_ist().strftime("%H:%M:%S"),
+                "symbols": [
+                    {"symbol_name": s["symbol_name"], "status": "login_required"}
+                    for s in symbols
+                ],
+            }
+        )
+
+    rows: list[dict] = []
+    for sym in symbols:
+        name = sym["symbol_name"]
+        depth = fyers_service.get_market_depth(name)
+        threshold = float(sym["volume_difference"])
+
+        if not depth or depth.get("error"):
+            rows.append({"symbol_name": name, "status": "waiting"})
+            continue
+
+        if depth.get("qty_source") != "full_book":
+            rows.append({"symbol_name": name, "status": "waiting_totals"})
+            continue
+
+        book_buy = float(depth.get("bid_qty") or 0)
+        book_sell = float(depth.get("ask_qty") or 0)
+        sell_diff = book_sell - book_buy
+        buy_diff = book_buy - book_sell
+        signal = None
+        if sell_diff >= threshold:
+            signal = "SELL"
+        elif buy_diff >= threshold:
+            signal = "BUY"
+
+        total = book_buy + book_sell
+        bid_pct = round((book_buy / total) * 100, 2) if total > 0 else 0
+
+        rows.append(
+            {
+                "symbol_name": name,
+                "status": "live",
+                "book_buy_qty": book_buy,
+                "book_sell_qty": book_sell,
+                "bid_pct": bid_pct,
+                "bid_price": depth.get("bid_price"),
+                "ask_price": depth.get("ask_price"),
+                "ltp": fyers_service.get_ltp(name),
+                "buy_diff": buy_diff,
+                "sell_diff": sell_diff,
+                "volume_diff": threshold,
+                "signal": signal,
+                "cache_age_sec": depth.get("cache_age_sec"),
+            }
+        )
+
+    return jsonify(
+        {
+            "connected": True,
+            "ws_active": fyers_service.is_market_ws_active(),
+            "market_open": True,
+            "market_message": "",
+            "start_time": session["start_time"],
+            "stop_time": session["stop_time"],
+            "timezone": session["timezone"],
+            "now": session["now"],
+            "updated_at": market_tz.now_ist().strftime("%H:%M:%S"),
+            "symbols": rows,
+        }
+    )
 
 
 @symbols_bp.route("/export.csv", methods=["GET"])

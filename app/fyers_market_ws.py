@@ -54,14 +54,6 @@ def _fmt_qty(qty: float) -> str:
     return f"{qty:.2f}"
 
 
-def _sum_side_qty(message: dict, side: str) -> float:
-    """Sum bid_size1..5 or ask_size1..5 from depth WebSocket message."""
-    total = 0.0
-    for level in range(1, 6):
-        total += float(message.get(f"{side}_size{level}") or 0)
-    return total
-
-
 def _depth_levels_line(message: dict, side: str) -> str:
     parts: list[str] = []
     for level in range(1, 6):
@@ -73,22 +65,47 @@ def _depth_levels_line(message: dict, side: str) -> str:
     return ", ".join(parts) if parts else "—"
 
 
-def _print_depth_tick(name: str, message: dict, ltp: float | None) -> None:
+def _print_depth_tick(
+    name: str,
+    message: dict,
+    ltp: float | None,
+    book_bid_total: float | None,
+    book_ask_total: float | None,
+) -> None:
     bid_line = _depth_levels_line(message, "bid")
     ask_line = _depth_levels_line(message, "ask")
-    bid_total = _sum_side_qty(message, "bid")
-    ask_total = _sum_side_qty(message, "ask")
     ltp_part = f"LTP {ltp:.2f}" if ltp is not None and ltp > 0 else "LTP —"
+    if book_bid_total is not None and book_ask_total is not None:
+        book_part = (
+            f"Book totals (like app): buy {book_bid_total:.0f} | sell {book_ask_total:.0f}"
+        )
+    else:
+        book_part = "Book totals: waiting for quote feed"
     print(
         f"[WS DEPTH {_ts()}] {name} | "
-        f"Bids: {bid_line} (total {bid_total:.0f}) | "
-        f"Asks: {ask_line} (total {ask_total:.0f}) | {ltp_part}",
+        f"Top 5 bids: {bid_line} | Top 5 asks: {ask_line} | "
+        f"{book_part} | {ltp_part}",
         flush=True,
     )
 
 
-def _print_ltp_tick(name: str, ltp: float) -> None:
-    print(f"[WS LTP   {_ts()}] {name} | Last traded price: {ltp:.2f}", flush=True)
+def _print_quote_tick(
+    name: str,
+    ltp: float | None,
+    tot_buy: float,
+    tot_sell: float,
+    bid_price: float,
+    ask_price: float,
+) -> None:
+    pct_buy = (tot_buy / (tot_buy + tot_sell) * 100) if (tot_buy + tot_sell) > 0 else 0
+    ltp_part = f"{ltp:.2f}" if ltp is not None else "—"
+    print(
+        f"[WS BOOK  {_ts()}] {name} | "
+        f"Total buy qty {tot_buy:.0f} | Total sell qty {tot_sell:.0f} | "
+        f"Bids {pct_buy:.1f}% | Best bid {bid_price:.2f} Best ask {ask_price:.2f} | "
+        f"LTP {ltp_part}",
+        flush=True,
+    )
 
 
 class MarketWebSocketManager:
@@ -138,6 +155,14 @@ class MarketWebSocketManager:
             except queue.Full:
                 pass
 
+    def _merge_market(self, key: str, patch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            entry = dict(self._depth.get(key) or {})
+            entry.update(patch)
+            entry["updated_at"] = time.time()
+            self._depth[key] = entry
+            return dict(entry)
+
     def _on_depth_message(self, message: dict) -> None:
         if message.get("type") != "dp":
             return
@@ -145,38 +170,70 @@ class MarketWebSocketManager:
         if not fyers_sym:
             return
 
-        bid_price = float(message.get("bid_price1") or 0)
-        ask_price = float(message.get("ask_price1") or 0)
-        bid_qty = _sum_side_qty(message, "bid")
-        ask_qty = _sum_side_qty(message, "ask")
         key = _short_name(fyers_sym)
-        entry = {
-            "symbol": fyers_sym,
-            "bid_price": bid_price,
-            "bid_qty": bid_qty,
-            "ask_price": ask_price,
-            "ask_qty": ask_qty,
-            "source": "websocket",
-            "updated_at": time.time(),
-        }
+        entry = self._merge_market(
+            key,
+            {
+                "symbol": fyers_sym,
+                "bid_price": float(message.get("bid_price1") or 0),
+                "ask_price": float(message.get("ask_price1") or 0),
+                "source": "websocket",
+            },
+        )
         with self._lock:
-            self._depth[key] = entry
             cached_ltp = self._ltp.get(key)
-        self._enqueue_tick(("depth", key, dict(message), cached_ltp))
+            book_bid = entry.get("bid_qty")
+            book_ask = entry.get("ask_qty")
+        self._enqueue_tick(
+            ("depth", key, dict(message), cached_ltp, book_bid, book_ask)
+        )
 
     def _on_quote_message(self, message: dict) -> None:
         msg_type = message.get("type")
         if msg_type not in ("sf", None):
             return
         fyers_sym = message.get("symbol")
-        ltp = message.get("ltp")
-        if not fyers_sym or ltp is None:
+        if not fyers_sym:
             return
+
+        tot_buy = message.get("tot_buy_qty")
+        tot_sell = message.get("tot_sell_qty")
+        if tot_buy is None or tot_sell is None:
+            return
+
         key = _short_name(fyers_sym)
-        ltp_val = float(ltp)
-        with self._lock:
-            self._ltp[key] = ltp_val
-        self._enqueue_tick(("ltp", key, ltp_val))
+        ltp_val = message.get("ltp")
+        if ltp_val is not None:
+            with self._lock:
+                self._ltp[key] = float(ltp_val)
+
+        bid_price = float(message.get("bid_price") or 0)
+        ask_price = float(message.get("ask_price") or 0)
+        tot_buy_f = float(tot_buy)
+        tot_sell_f = float(tot_sell)
+        patch: dict[str, Any] = {
+            "symbol": fyers_sym,
+            "bid_qty": tot_buy_f,
+            "ask_qty": tot_sell_f,
+            "qty_source": "full_book",
+        }
+        if bid_price > 0:
+            patch["bid_price"] = bid_price
+        if ask_price > 0:
+            patch["ask_price"] = ask_price
+        self._merge_market(key, patch)
+
+        self._enqueue_tick(
+            (
+                "quote",
+                key,
+                float(ltp_val) if ltp_val is not None else None,
+                tot_buy_f,
+                tot_sell_f,
+                bid_price,
+                ask_price,
+            )
+        )
 
     def _drain_tick_queue(self, max_items: int = 200) -> None:
         for _ in range(max_items):
@@ -186,11 +243,11 @@ class MarketWebSocketManager:
                 break
             kind = item[0]
             if kind == "depth":
-                _, name, msg, cached_ltp = item
-                _print_depth_tick(name, msg, cached_ltp)
-            elif kind == "ltp":
-                _, name, ltp_val = item
-                _print_ltp_tick(name, ltp_val)
+                _, name, msg, cached_ltp, book_bid, book_ask = item
+                _print_depth_tick(name, msg, cached_ltp, book_bid, book_ask)
+            elif kind == "quote":
+                _, name, ltp_val, tot_buy, tot_sell, bid_p, ask_p = item
+                _print_quote_tick(name, ltp_val, tot_buy, tot_sell, bid_p, ask_p)
             elif kind == "log":
                 print(item[1], flush=True)
 
@@ -249,7 +306,7 @@ class MarketWebSocketManager:
         sock = _make_data_socket(
             access_token=access,
             log_path="",
-            litemode=True,
+            litemode=False,
             write_to_file=False,
             reconnect=True,
             on_connect=onopen,
@@ -302,7 +359,7 @@ class MarketWebSocketManager:
 
         if self._active:
             print(
-                f"[Fyers WS] connected depth={depth_ok} quote_ltp={quote_ok} "
+                f"[Fyers WS] connected depth={depth_ok} quote_book={quote_ok} "
                 f"symbols={len(fyers_symbols)}",
                 flush=True,
             )

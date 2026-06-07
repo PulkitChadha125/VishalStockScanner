@@ -229,8 +229,24 @@ def _parse_depth_response(res: dict, sym: str) -> dict[str, Any]:
 
     bid_p, _ = _level(bids, 0)
     ask_p, _ = _level(asks, 0)
-    bid_q = _sum_qty(bids)
-    ask_q = _sum_qty(asks)
+
+    bid_q = float(
+        book.get("totalbuyqty")
+        or book.get("total_buy_qty")
+        or book.get("tbq")
+        or 0
+    )
+    ask_q = float(
+        book.get("totalsellqty")
+        or book.get("total_sell_qty")
+        or book.get("tsq")
+        or 0
+    )
+    qty_source = "full_book"
+    if bid_q <= 0 and ask_q <= 0:
+        bid_q = _sum_qty(bids)
+        ask_q = _sum_qty(asks)
+        qty_source = "top_levels_fallback"
 
     return {
         "symbol": sym,
@@ -238,6 +254,7 @@ def _parse_depth_response(res: dict, sym: str) -> dict[str, Any]:
         "bid_qty": bid_q,
         "ask_price": ask_p,
         "ask_qty": ask_q,
+        "qty_source": qty_source,
         "raw": book,
     }
 

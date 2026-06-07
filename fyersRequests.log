@@ -9031,3 +9031,6 @@
 {"level":"DEBUG","location":"[get_call:159] fyersModel","message":{"Status Code":200,"API":"/funds"},"timestamp":"2026-06-05 17:28:53,705+0530","service":"FyersAPIRequest"}
 {"level":"DEBUG","location":"[get_call:159] fyersModel","message":{"Status Code":200,"API":"/funds"},"timestamp":"2026-06-05 17:29:24,054+0530","service":"FyersAPIRequest"}
 {"level":"DEBUG","location":"[get_call:159] fyersModel","message":{"Status Code":200,"API":"/funds"},"timestamp":"2026-06-05 17:29:54,466+0530","service":"FyersAPIRequest"}
+{"level":"DEBUG","location":"[get_call:159] fyersModel","message":{"Status Code":200,"API":"/profile"},"timestamp":"2026-06-07 20:12:26,857+0530","service":"FyersAPIRequest"}
+{"level":"DEBUG","location":"[get_call:159] fyersModel","message":{"Status Code":200,"API":"/profile"},"timestamp":"2026-06-07 20:12:26,916+0530","service":"FyersAPIRequest"}
+{"level":"DEBUG","location":"[get_call:159] fyersModel","message":{"Status Code":200,"API":"/funds"},"timestamp":"2026-06-07 20:12:26,970+0530","service":"FyersAPIRequest"}

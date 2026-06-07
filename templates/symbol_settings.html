@@ -43,8 +43,8 @@
       </label>
       <label class="cp-field cp-field--tz" for="strategy-timezone">
         <span class="cp-field__label">Timezone</span>
-        <select id="strategy-timezone" title="Trading window uses this timezone">
-          <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+        <select id="strategy-timezone" title="Trading window uses this timezone (default IST)">
+          <option value="Asia/Kolkata" selected>Asia/Kolkata (IST)</option>
           <option value="Asia/Dubai">Asia/Dubai</option>
           <option value="Asia/Singapore">Asia/Singapore</option>
           <option value="Asia/Tokyo">Asia/Tokyo</option>
@@ -93,6 +93,42 @@
         </tr>
       </tbody>
     </table>
+  </section>
+
+  <section class="market-book" id="market-book-section" aria-live="polite">
+    <header class="market-book__header">
+      <div>
+        <h2 class="market-book__title">Live order book totals</h2>
+        <p class="market-book__subtitle">
+          Total buy vs sell quantity during your session hours (
+          <span id="market-book-hours">—</span>
+          ). Before session start: &quot;Market not open&quot;.
+        </p>
+      </div>
+      <span class="market-book__updated" id="market-book-updated">—</span>
+    </header>
+    <p class="market-book__banner" id="market-book-banner" hidden></p>
+    <div class="table-wrap">
+      <table class="data-table" id="market-book-table">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Total buy qty</th>
+            <th>Total sell qty</th>
+            <th>Buy / Sell mix</th>
+            <th>Best bid</th>
+            <th>Best ask</th>
+            <th>LTP</th>
+            <th>Signal</th>
+          </tr>
+        </thead>
+        <tbody id="market-book-tbody">
+          <tr class="empty-row" id="market-book-empty">
+            <td colspan="8">Log in to API to see live book totals.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 </main>
 
@@ -152,4 +188,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/strategy.js') }}"></script>
 <script src="{{ url_for('static', filename='js/symbols.js') }}"></script>
+<script src="{{ url_for('static', filename='js/market_book.js') }}"></script>
 {% endblock %}
