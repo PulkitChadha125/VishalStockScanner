@@ -201,6 +201,9 @@ class MarketWebSocketManager:
         if tot_buy is None or tot_sell is None:
             return
 
+        tot_buy_f = float(tot_buy)
+        tot_sell_f = float(tot_sell)
+
         key = _short_name(fyers_sym)
         ltp_val = message.get("ltp")
         if ltp_val is not None:
@@ -209,19 +212,29 @@ class MarketWebSocketManager:
 
         bid_price = float(message.get("bid_price") or 0)
         ask_price = float(message.get("ask_price") or 0)
-        tot_buy_f = float(tot_buy)
-        tot_sell_f = float(tot_sell)
-        patch: dict[str, Any] = {
-            "symbol": fyers_sym,
-            "bid_qty": tot_buy_f,
-            "ask_qty": tot_sell_f,
-            "qty_source": "full_book",
-        }
+
+        price_patch: dict[str, Any] = {"symbol": fyers_sym}
         if bid_price > 0:
-            patch["bid_price"] = bid_price
+            price_patch["bid_price"] = bid_price
         if ask_price > 0:
-            patch["ask_price"] = ask_price
-        self._merge_market(key, patch)
+            price_patch["ask_price"] = ask_price
+        if len(price_patch) > 1:
+            self._merge_market(key, price_patch)
+
+        # WS often sends tot_buy/tot_sell as 0 for NSE equity — REST fills these.
+        if tot_buy_f <= 0 and tot_sell_f <= 0:
+            return
+
+        self._merge_market(
+            key,
+            {
+                "symbol": fyers_sym,
+                "bid_qty": tot_buy_f,
+                "ask_qty": tot_sell_f,
+                "qty_source": "full_book",
+                "book_source": "websocket",
+            },
+        )
 
         self._enqueue_tick(
             (
@@ -426,6 +439,31 @@ class MarketWebSocketManager:
                 return (bid + ask) / 2.0
         return None
 
+    def merge_rest_book(self, symbol_name: str, data: dict[str, Any]) -> None:
+        """Apply REST depth() book totals into the live cache (WS LTP/prices kept)."""
+        if data.get("error"):
+            return
+        bid_q = float(data.get("bid_qty") or 0)
+        ask_q = float(data.get("ask_qty") or 0)
+        if bid_q <= 0 and ask_q <= 0:
+            return
+
+        key = _short_name(symbol_name)
+        patch: dict[str, Any] = {
+            "symbol": data.get("symbol") or symbol_name,
+            "bid_qty": bid_q,
+            "ask_qty": ask_q,
+            "qty_source": data.get("qty_source") or "full_book",
+            "book_source": "rest",
+        }
+        bid_p = float(data.get("bid_price") or 0)
+        ask_p = float(data.get("ask_price") or 0)
+        if bid_p > 0:
+            patch["bid_price"] = bid_p
+        if ask_p > 0:
+            patch["ask_price"] = ask_p
+        self._merge_market(key, patch)
+
 
 _manager = MarketWebSocketManager()
 
@@ -459,3 +497,7 @@ def get_depth(symbol_name: str) -> dict[str, Any] | None:
 
 def get_ltp(symbol_name: str) -> float | None:
     return _manager.get_ltp(symbol_name)
+
+
+def merge_rest_book(symbol_name: str, data: dict[str, Any]) -> None:
+    _manager.merge_rest_book(symbol_name, data)

@@ -142,8 +142,75 @@ def _print_trade_result(trade: dict):
 
 
 def get_open_position() -> dict | None:
+    _sync_open_position_from_db()
     with _lock:
         return asdict(_open_position) if _open_position else None
+
+
+def _restore_open_position_from_trade(trade: dict) -> None:
+    global _open_position
+
+    sym = repository.get_symbol_by_name(trade["symbol_name"])
+    side = 1 if trade["side"] == "BUY" else -1
+    sl_pct = float(sym["stop_loss_pct"]) if sym else 0.0
+    tgt_pct = float(sym["target_pct"]) if sym else 0.0
+
+    with _lock:
+        _open_position = OpenPosition(
+            trade_id=trade["id"],
+            symbol_name=trade["symbol_name"],
+            fyers_symbol=fyers_service.to_fyers_symbol(trade["symbol_name"]),
+            side=side,
+            side_label=trade["side"],
+            entry_price=float(trade["entry_price"]),
+            quantity=int(trade["quantity"]),
+            stop_loss_pct=sl_pct,
+            target_pct=tgt_pct,
+            stop_loss_price=float(trade["stop_loss"] or 0),
+            target_price=float(trade["target"] or 0),
+            opened_at=trade["entry_time"],
+            entry_status=trade["entry_status"],
+        )
+
+
+def _sync_open_position_from_db() -> bool:
+    """Load the open trade from DB into memory when the engine restarted."""
+    global _open_position
+
+    with _lock:
+        if _open_position is not None:
+            return True
+
+    trade = repository.get_open_trade()
+    if not trade:
+        return False
+
+    _restore_open_position_from_trade(trade)
+    _log_app(
+        f"Restored open position in {trade['symbol_name']} — "
+        "new entries blocked until SL/target",
+        {"trade_id": trade["id"]},
+    )
+    print(
+        f"[POSITION] Restored open trade in {trade['symbol_name']} "
+        f"(id={trade['id']}) — blocking other symbols",
+        flush=True,
+    )
+    return True
+
+
+def _has_open_position() -> bool:
+    if _sync_open_position_from_db():
+        return True
+    return repository.has_open_trade()
+
+
+def _open_position_symbol() -> str | None:
+    with _lock:
+        if _open_position is not None:
+            return _open_position.symbol_name
+    trade = repository.get_open_trade()
+    return trade["symbol_name"] if trade else None
 
 
 def get_engine_status() -> dict:
@@ -195,6 +262,16 @@ def _evaluate_signal(
 def _enter_trade(symbol: dict, signal: str, depth: dict):
     global _open_position, _last_signal
 
+    if _has_open_position():
+        open_sym = _open_position_symbol()
+        print(
+            f"[ENTRY BLOCKED] Open trade in {open_sym} — "
+            f"ignoring {signal} on {symbol['symbol_name']}",
+            flush=True,
+        )
+        _last_signal = f"BLOCKED_{open_sym}"
+        return
+
     side = 1 if signal == "BUY" else -1
     entry_price = depth["ask_price"] if side == 1 else depth["bid_price"]
     if not entry_price or entry_price <= 0:
@@ -204,11 +281,17 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         return
 
     time_frame = symbol.get("time_frame", "5m")
-    vwap = fyers_service.get_vwap(symbol["symbol_name"], time_frame)
+    vwap_meta = fyers_service.get_vwap_with_meta(symbol["symbol_name"], time_frame)
+    vwap = vwap_meta.get("vwap") if vwap_meta else None
     if vwap is None:
         _log_app(
             f"Entry skipped — VWAP unavailable for {symbol['symbol_name']} ({time_frame})",
-            {"entry_price": entry_price, "time_frame": time_frame},
+            {
+                "entry_price": entry_price,
+                "time_frame": time_frame,
+                "vwap_api_request": vwap_meta.get("request") if vwap_meta else None,
+                "vwap_api_response": vwap_meta.get("response") if vwap_meta else None,
+            },
         )
         print(
             f"[VWAP] {symbol['symbol_name']} ({time_frame}): unavailable, entry skipped",
@@ -235,11 +318,12 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
 
     qty = DEFAULT_QTY
     entry_time = _now_market().strftime("%Y-%m-%d %H:%M:%S")
-    resp = fyers_service.place_market_order(symbol["symbol_name"], side, qty)
+    order_result = fyers_service.place_market_order(symbol["symbol_name"], side, qty)
+    resp = order_result.get("response")
     entry_status = fyers_service.order_status_label(resp)
     _log_app(
         f"ENTRY {signal} {symbol['symbol_name']} @ {entry_price:.2f} ({entry_status})",
-        {"response": resp, "depth": depth},
+        {"request": order_result.get("request"), "response": resp, "depth": depth},
     )
     _log_order(
         symbol["symbol_name"],
@@ -260,6 +344,16 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         stop_loss=sl_price,
         target=tgt_price,
         entry_time=entry_time,
+        details={
+            "vwap": vwap,
+            "time_frame": time_frame,
+            "vwap_candle_count": vwap_meta.get("candle_count"),
+            "vwap_api_request": vwap_meta.get("request"),
+            "vwap_api_response": vwap_meta.get("response"),
+            "vwap_filter_passed": True,
+            "entry_api_request": order_result.get("request"),
+            "entry_api_response": resp,
+        },
     )
 
     # Track position in backend even when Fyers rejects the order (paper SL/target).
@@ -296,9 +390,10 @@ def _exit_trade(reason: str, exit_price: float | None = None):
         fyers_service.get_ltp(pos.symbol_name) or pos.entry_price
     )
     exit_time = _now_market().strftime("%Y-%m-%d %H:%M:%S")
-    resp = fyers_service.place_market_order(
+    order_result = fyers_service.place_market_order(
         pos.symbol_name, exit_side, pos.quantity
     )
+    resp = order_result.get("response")
     exit_status = fyers_service.order_status_label(resp)
     pnl = repository.calc_trade_pnl(
         pos.side, pos.entry_price, ltp, pos.quantity
@@ -306,7 +401,12 @@ def _exit_trade(reason: str, exit_price: float | None = None):
     status = f"EXIT_{reason}_{exit_status}"
     _log_app(
         f"{status} {pos.side_label} {pos.symbol_name} @ {ltp:.2f} pnl={pnl:.2f}",
-        {"response": resp, "position": asdict(pos), "pnl": pnl},
+        {
+            "request": order_result.get("request"),
+            "response": resp,
+            "position": asdict(pos),
+            "pnl": pnl,
+        },
     )
     _log_order(
         pos.symbol_name,
@@ -325,6 +425,10 @@ def _exit_trade(reason: str, exit_price: float | None = None):
         exit_status=exit_status,
         pnl=pnl,
         exit_time=exit_time,
+        details_update={
+            "exit_api_request": order_result.get("request"),
+            "exit_api_response": resp,
+        },
     )
     if trade:
         _print_trade_result(trade)
@@ -366,9 +470,17 @@ def _scan_for_entry():
             )
         return
 
-    with _lock:
-        if _open_position is not None:
-            return
+    if _has_open_position():
+        open_sym = _open_position_symbol()
+        blocked_key = f"WAITING_{open_sym}"
+        if _last_signal != blocked_key:
+            _last_signal = blocked_key
+            print(
+                f"[ENTRY BLOCKED] Open trade in {open_sym} — "
+                "no new entries until SL or target",
+                flush=True,
+            )
+        return
 
     symbols = repository.list_symbols()
     if not symbols:
@@ -398,9 +510,9 @@ def _scan_for_entry():
             )
             continue
 
-        if depth.get("qty_source") != "full_book":
+        if not fyers_service.has_book_totals(depth):
             print(
-                f"[DEPTH {tick_ts}] {name}: waiting for full book totals (tot_buy/tot_sell)",
+                f"[DEPTH {tick_ts}] {name}: waiting for book totals (REST 1/sec)",
                 flush=True,
             )
             continue
@@ -451,9 +563,8 @@ def _scan_for_entry():
         if not signal:
             continue
 
-        with _lock:
-            if _open_position is not None:
-                return
+        if _has_open_position():
+            return
 
         _log_app(
             f"Signal {signal} on {sym['symbol_name']}: "
@@ -483,10 +594,7 @@ def _tick():
 
     fyers_service.fetch_balance()
 
-    with _lock:
-        has_open = _open_position is not None
-
-    if has_open:
+    if _has_open_position():
         _monitor_open_position()
     else:
         _scan_for_entry()
@@ -494,7 +602,6 @@ def _tick():
 
 def _run_loop():
     global _thread
-    fyers_service.clear_depth_cache()
     _log_app("Strategy engine thread started")
     tick_count = 0
     while not _stop_event.is_set():
@@ -526,6 +633,8 @@ def start() -> tuple[bool, str]:
     if is_engine_running():
         return False, "Strategy engine is already running."
 
+    _sync_open_position_from_db()
+
     _stop_event.clear()
     repository.set_strategy_running(True)
     _thread = threading.Thread(target=_run_loop, name="strategy-engine", daemon=True)
@@ -547,5 +656,18 @@ def stop(square_off: bool = True) -> tuple[bool, str]:
     if _thread and _thread.is_alive():
         _thread.join(timeout=3.0)
 
+    reset_session_state()
     _log_app("Strategy stopped via engine")
     return True, ""
+
+
+def reset_session_state() -> None:
+    """Clear in-memory strategy flags after Stop."""
+    global _open_position, _last_signal, _last_tick_at, _thread
+
+    with _lock:
+        _open_position = None
+        _last_signal = None
+        _last_tick_at = None
+        _thread = None
+    fyers_service.clear_depth_cache()

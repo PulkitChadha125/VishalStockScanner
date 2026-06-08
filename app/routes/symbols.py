@@ -131,7 +131,7 @@ def market_book_snapshot():
             rows.append({"symbol_name": name, "status": "waiting"})
             continue
 
-        if depth.get("qty_source") != "full_book":
+        if not fyers_service.has_book_totals(depth):
             rows.append({"symbol_name": name, "status": "waiting_totals"})
             continue
 
@@ -163,6 +163,7 @@ def market_book_snapshot():
                 "volume_diff": threshold,
                 "signal": signal,
                 "cache_age_sec": depth.get("cache_age_sec"),
+                "book_source": depth.get("book_source", "rest"),
             }
         )
 

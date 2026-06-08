@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -39,8 +40,12 @@ DEPTH_RATE_LIMIT_BACKOFF_SEC = 3.0
 
 _depth_cache: dict[str, tuple[dict[str, Any], float]] = {}
 _depth_rotate_idx = 0
+_book_rotate_idx = 0
 _last_depth_api_at = 0.0
 _rate_limited_until = 0.0
+
+_book_refresh_stop = threading.Event()
+_book_refresh_thread: threading.Thread | None = None
 
 
 def is_connected() -> bool:
@@ -92,11 +97,13 @@ def login_from_csv() -> tuple[bool, str, float | None]:
     _last_balance = bal
     _last_balance_detail = detail
     _start_market_websocket()
+    _start_book_refresh_thread()
     return True, "", bal
 
 
 def logout() -> None:
     global _connected, _last_balance, _last_balance_detail
+    _stop_book_refresh_thread()
     _stop_market_websocket()
     clear_depth_cache()
     _connected = False
@@ -104,6 +111,11 @@ def logout() -> None:
     _last_balance_detail = None
     fyi.fyers = None
     fyi.access_token = None
+
+
+def reset_session_state() -> None:
+    """Stop feeds, clear caches, and disconnect Fyers (used on Stop button)."""
+    logout()
 
 
 def _start_market_websocket() -> None:
@@ -130,6 +142,35 @@ def sync_market_websocket() -> None:
 
 def is_market_ws_active() -> bool:
     return fyers_market_ws.is_active()
+
+
+def _start_book_refresh_thread() -> None:
+    global _book_refresh_thread
+    _book_refresh_stop.clear()
+    if _book_refresh_thread is not None and _book_refresh_thread.is_alive():
+        return
+    _book_refresh_thread = threading.Thread(
+        target=_book_refresh_loop,
+        name="book-totals-refresh",
+        daemon=True,
+    )
+    _book_refresh_thread.start()
+
+
+def _stop_book_refresh_thread() -> None:
+    _book_refresh_stop.set()
+
+
+def _book_refresh_loop() -> None:
+    while not _book_refresh_stop.is_set():
+        try:
+            if is_connected() and market_tz.session_status().get("market_open"):
+                names = [s["symbol_name"] for s in repository.list_symbols()]
+                if names:
+                    tick_book_totals_refresh(names)
+        except Exception as e:
+            print(f"[Book REST] refresh error: {e}", flush=True)
+        _book_refresh_stop.wait(DEPTH_MIN_INTERVAL_SEC)
 
 
 def fetch_balance() -> tuple[float | None, dict[str, Any] | None]:
@@ -232,12 +273,14 @@ def _parse_depth_response(res: dict, sym: str) -> dict[str, Any]:
 
     bid_q = float(
         book.get("totalbuyqty")
+        or book.get("totalBuyQty")
         or book.get("total_buy_qty")
         or book.get("tbq")
         or 0
     )
     ask_q = float(
         book.get("totalsellqty")
+        or book.get("totalSellQty")
         or book.get("total_sell_qty")
         or book.get("tsq")
         or 0
@@ -255,6 +298,7 @@ def _parse_depth_response(res: dict, sym: str) -> dict[str, Any]:
         "ask_price": ask_p,
         "ask_qty": ask_q,
         "qty_source": qty_source,
+        "book_source": "rest",
         "raw": book,
     }
 
@@ -295,6 +339,75 @@ def _store_depth_cache(symbol_name: str, data: dict[str, Any]) -> None:
     _depth_cache[_depth_cache_key(symbol_name)] = (data, time.time())
 
 
+def _has_book_totals(data: dict[str, Any] | None) -> bool:
+    if not data or data.get("error"):
+        return False
+    src = data.get("qty_source")
+    if src not in ("full_book", "top_levels_fallback"):
+        return False
+    return float(data.get("bid_qty") or 0) > 0 or float(data.get("ask_qty") or 0) > 0
+
+
+def _merge_depth_snapshots(
+    ws: dict[str, Any] | None, rest: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if not ws and not rest:
+        return None
+    merged: dict[str, Any] = dict(rest or ws or {})
+    if ws and rest:
+        merged.update(rest)
+        for field in ("bid_price", "ask_price", "ltp"):
+            ws_val = ws.get(field)
+            if ws_val and float(ws_val) > 0:
+                merged[field] = ws_val
+        if _has_book_totals(rest):
+            merged["bid_qty"] = rest["bid_qty"]
+            merged["ask_qty"] = rest["ask_qty"]
+            merged["qty_source"] = rest.get("qty_source", "full_book")
+            merged["book_source"] = rest.get("book_source", "rest")
+        elif _has_book_totals(ws):
+            merged["bid_qty"] = ws["bid_qty"]
+            merged["ask_qty"] = ws["ask_qty"]
+            merged["qty_source"] = ws.get("qty_source", "full_book")
+            merged["book_source"] = ws.get("book_source", "websocket")
+        if ws.get("updated_at"):
+            merged["updated_at"] = ws["updated_at"]
+    elif ws:
+        merged = dict(ws)
+    return merged
+
+
+def has_book_totals(data: dict[str, Any] | None) -> bool:
+    return _has_book_totals(data)
+
+
+def tick_book_totals_refresh(symbol_names: list[str]) -> str | None:
+    """
+    REST depth() rotation: 1 symbol per second for full book buy/sell totals.
+    Updates REST cache and live display cache (used when WS totals are missing).
+    """
+    global _book_rotate_idx
+
+    if not symbol_names or not is_connected():
+        return None
+
+    name = symbol_names[_book_rotate_idx % len(symbol_names)]
+    data = _call_depth_api(name)
+    err = data.get("error")
+    if err in ("throttled", "rate_limited"):
+        return None
+
+    _book_rotate_idx += 1
+    if not err and _has_book_totals(data):
+        _store_depth_cache(name, data)
+        fyers_market_ws.merge_rest_book(name, data)
+        print(
+            f"[Book REST] {name} buy={data.get('bid_qty')} sell={data.get('ask_qty')}",
+            flush=True,
+        )
+    return name if not err else None
+
+
 def tick_depth_refresh(symbol_names: list[str]) -> str | None:
     """
     Refresh depth for one symbol per engine tick (max 1 depth API call/sec).
@@ -327,22 +440,27 @@ def tick_depth_refresh(symbol_names: list[str]) -> str | None:
 def get_market_depth(
     symbol_name: str, max_age_sec: float = DEPTH_CACHE_TTL_SEC
 ) -> dict[str, Any] | None:
-    """Return WebSocket depth when connected, else REST cache."""
+    """Merge WebSocket prices/LTP with REST book totals (1 REST call/sec rotation)."""
     ws_depth = fyers_market_ws.get_depth(symbol_name)
     if ws_depth:
-        return ws_depth
+        age = time.time() - float(ws_depth.get("updated_at") or 0)
+        ws_depth = {**ws_depth, "cache_age_sec": round(age, 1)}
 
     key = _depth_cache_key(symbol_name)
+    rest_depth = None
     entry = _depth_cache.get(key)
-    if not entry:
-        return None
+    if entry:
+        data, ts = entry
+        age = time.time() - ts
+        if age <= max_age_sec:
+            rest_depth = {**data, "cache_age_sec": round(age, 1)}
 
-    data, ts = entry
-    age = time.time() - ts
-    if age > max_age_sec:
-        return None
-
-    return {**data, "cache_age_sec": round(age, 1)}
+    merged = _merge_depth_snapshots(ws_depth, rest_depth)
+    if merged and _has_book_totals(merged):
+        return merged
+    if merged:
+        return merged
+    return None
 
 
 def fetch_market_depth_immediate(symbol_name: str) -> dict[str, Any]:
@@ -354,9 +472,10 @@ def fetch_market_depth_immediate(symbol_name: str) -> dict[str, Any]:
 
 
 def clear_depth_cache() -> None:
-    global _depth_rotate_idx, _last_depth_api_at, _rate_limited_until
+    global _depth_rotate_idx, _book_rotate_idx, _last_depth_api_at, _rate_limited_until
     _depth_cache.clear()
     _depth_rotate_idx = 0
+    _book_rotate_idx = 0
     _last_depth_api_at = 0.0
     _rate_limited_until = 0.0
 
@@ -378,9 +497,9 @@ def get_ltp(symbol_name: str) -> float | None:
 
 
 def place_market_order(symbol_name: str, side: int, quantity: int = 1) -> dict:
-    """side: 1 buy, -1 sell. order type 2 = market."""
+    """side: 1 buy, -1 sell. order type 2 = market. Returns request + response."""
     sym = to_fyers_symbol(symbol_name)
-    return fyi.place_order(sym, quantity, 2, side, 0)
+    return fyi.place_order_with_meta(sym, quantity, 2, side, 0)
 
 
 def is_order_successful(response: dict | None) -> bool:
@@ -397,6 +516,20 @@ def timeframe_to_resolution(time_frame: str) -> str | None:
 
 def _today_market_date():
     return market_tz.now().date()
+
+
+def _summarize_history_response(response: dict | None) -> dict | None:
+    if not isinstance(response, dict):
+        return response
+    summary = {
+        "s": response.get("s"),
+        "code": response.get("code"),
+        "message": response.get("message"),
+    }
+    candles = response.get("candles")
+    if isinstance(candles, list):
+        summary["candle_count"] = len(candles)
+    return summary
 
 
 def calculate_vwap_from_candles(df) -> float | None:
@@ -427,36 +560,135 @@ def calculate_vwap_from_candles(df) -> float | None:
     return float((typical * vol).sum() / vol.sum())
 
 
-def get_vwap(symbol_name: str, time_frame: str) -> float | None:
+def fetch_history_for_vwap(
+    symbol_name: str, time_frame: str, days_back: int = 17
+) -> dict | None:
     """
-    VWAP for symbol on configured UI timeframe (intraday session candles).
-    Cached briefly to limit history API calls.
+    Fetch Fyers history candles for the symbol's configured timeframe (e.g. 1h → 60).
+    Returns request, summarized response, dataframe, and session VWAP.
     """
-    if not is_connected():
+    if not is_connected() or fyi.fyers is None:
         return None
 
     tf = (time_frame or "").strip().lower()
     resolution = timeframe_to_resolution(tf)
     if not resolution:
+        print(f"[VWAP] Unsupported timeframe: {time_frame}", flush=True)
         return None
 
+    sym = to_fyers_symbol(symbol_name)
+    today = market_tz.now().date()
+    request = {
+        "symbol": sym,
+        "resolution": str(resolution),
+        "date_format": "1",
+        "range_from": str(today - timedelta(days=days_back)),
+        "range_to": str(today + timedelta(days=1)),
+        "cont_flag": "1",
+    }
+
+    try:
+        response = fyi.fyers.history(data=request)
+    except Exception as exc:
+        print(f"[VWAP] History API error for {symbol_name}: {exc}", flush=True)
+        return {
+            "request": request,
+            "response": {"s": "error", "message": str(exc)},
+            "df": None,
+            "vwap": None,
+            "time_frame": tf,
+        }
+
+    if not isinstance(response, dict) or response.get("s") != "ok":
+        print(
+            f"[VWAP] History rejected for {symbol_name} ({tf}): {response}",
+            flush=True,
+        )
+        return {
+            "request": request,
+            "response": _summarize_history_response(response),
+            "df": None,
+            "vwap": None,
+            "time_frame": tf,
+        }
+
+    candles = response.get("candles") or []
+    if not candles:
+        print(f"[VWAP] No candles for {symbol_name} ({tf})", flush=True)
+        return {
+            "request": request,
+            "response": _summarize_history_response(response),
+            "df": None,
+            "vwap": None,
+            "time_frame": tf,
+        }
+
+    df = pd.DataFrame(
+        candles, columns=["date", "open", "high", "low", "close", "volume"]
+    )
+    df["date"] = pd.to_datetime(df["date"], unit="s", utc=True).dt.tz_convert(
+        market_tz.get_market_timezone()
+    )
+    vwap = calculate_vwap_from_candles(df)
+    if vwap is None:
+        print(
+            f"[VWAP] Could not compute VWAP for {symbol_name} ({tf}) "
+            f"from {len(candles)} candles",
+            flush=True,
+        )
+
+    return {
+        "request": request,
+        "response": _summarize_history_response(response),
+        "df": df,
+        "vwap": vwap,
+        "time_frame": tf,
+        "candle_count": len(candles),
+    }
+
+
+def get_vwap_with_meta(symbol_name: str, time_frame: str) -> dict | None:
+    """VWAP plus Fyers history request/response metadata."""
+    tf = (time_frame or "").strip().lower()
     cache_key = (symbol_name.upper(), tf)
     now = time.time()
     cached = _vwap_cache.get(cache_key)
     if cached and (now - cached[1]) < VWAP_CACHE_TTL_SEC:
-        return cached[0]
+        return {
+            "vwap": cached[0],
+            "time_frame": tf,
+            "request": cached[2],
+            "response": cached[3],
+            "candle_count": cached[4],
+        }
 
-    sym = to_fyers_symbol(symbol_name)
-    try:
-        df = fyi.fetchOHLC(sym, resolution)
-        if df is None or getattr(df, "empty", True):
-            return None
-        vwap = calculate_vwap_from_candles(df)
-        if vwap is not None:
-            _vwap_cache[cache_key] = (vwap, now)
-        return vwap
-    except Exception:
+    result = fetch_history_for_vwap(symbol_name, time_frame)
+    if not result:
         return None
+
+    vwap = result.get("vwap")
+    if vwap is not None:
+        _vwap_cache[cache_key] = (
+            vwap,
+            now,
+            result.get("request"),
+            result.get("response"),
+            result.get("candle_count"),
+        )
+
+    return {
+        "vwap": vwap,
+        "time_frame": result.get("time_frame"),
+        "request": result.get("request"),
+        "response": result.get("response"),
+        "candle_count": result.get("candle_count"),
+    }
+
+
+def get_vwap(symbol_name: str, time_frame: str) -> float | None:
+    """VWAP for symbol on configured UI timeframe (intraday session candles)."""
+    meta = get_vwap_with_meta(symbol_name, time_frame)
+    return meta.get("vwap") if meta else None
 
 
 def passes_vwap_filter(signal: str, entry_price: float, vwap: float) -> tuple[bool, str]:

@@ -152,6 +152,12 @@ def _run():
     _log("Scheduler thread stopped")
 
 
+def on_manual_stop() -> None:
+    """Record manual stop so scheduler state stays consistent for the day."""
+    global _stopped_date
+    _stopped_date = _today_key()
+
+
 def start_scheduler():
     global _thread
     with _lock:

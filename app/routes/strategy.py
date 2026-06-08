@@ -2,7 +2,7 @@ import re
 
 from flask import Blueprint, jsonify, request
 
-from app import fyers_service, market_tz, repository, strategy_engine
+from app import fyers_service, market_tz, repository, strategy_engine, strategy_scheduler
 
 strategy_bp = Blueprint("strategy", __name__)
 
@@ -219,18 +219,31 @@ def start_strategy():
 @strategy_bp.route("/stop", methods=["POST"])
 def stop_strategy():
     strategy_engine.get_engine_status()
-    if not strategy_engine.is_engine_running():
-        repository.set_strategy_running(False)
-        status = strategy_engine.get_engine_status()
-        return jsonify(
-            {**status, "message": "Strategy was already stopped."}
-        )
+    was_running = strategy_engine.is_engine_running()
 
-    strategy_engine.stop(square_off=True)
+    if was_running:
+        strategy_engine.stop(square_off=True)
+    else:
+        repository.set_strategy_running(False)
+        strategy_engine.reset_session_state()
+
+    fyers_service.reset_session_state()
+    repository.set_api_connected(False)
+    strategy_scheduler.on_manual_stop()
+
     status = strategy_engine.get_engine_status()
-    _log("Strategy stopped manually")
+    _log("Strategy stopped — session reset (API disconnected, feeds cleared)")
     return jsonify(
-        {**status, "message": "Strategy stopped."}
+        {
+            **status,
+            "api_connected": False,
+            "is_running": False,
+            "available_balance": None,
+            "message": (
+                "Strategy stopped and session reset. "
+                "Click Login or Start to connect again."
+            ),
+        }
     )
 
 

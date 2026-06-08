@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request
 
-from app import market_tz, repository
+from app import market_tz, repository, trade_detail
 
 logs_bp = Blueprint("logs", __name__)
 
@@ -40,6 +40,14 @@ def _parse_log_filters():
     date_to = request.args.get("to") or None
     today_only = request.args.get("today", "").lower() in ("1", "true", "yes")
     return symbol, date_from, date_to, today_only
+
+
+@logs_bp.route("/orders/<int:trade_id>", methods=["GET"])
+def get_order_trade(trade_id: int):
+    trade = repository.get_trade(trade_id)
+    if not trade:
+        return jsonify({"error": "Trade not found."}), 404
+    return jsonify(trade_detail.enrich_trade_for_display(trade))
 
 
 @logs_bp.route("/orders/<int:trade_id>", methods=["DELETE"])

@@ -90,6 +90,55 @@
     </table>
   </section>
 </main>
+
+<div class="modal" id="trade-detail-modal" aria-hidden="true">
+  <div class="modal__backdrop" data-close-trade-modal></div>
+  <div class="modal__dialog modal__dialog--wide" role="dialog" aria-labelledby="trade-detail-title">
+    <header class="modal__header">
+      <h2 id="trade-detail-title">Trade details</h2>
+      <button type="button" class="modal__close" data-close-trade-modal aria-label="Close">&times;</button>
+    </header>
+    <div class="modal__body trade-detail">
+      <div class="trade-detail__grid">
+        <div class="trade-detail__item">
+          <span class="trade-detail__label">Entry price</span>
+          <span class="trade-detail__value" id="detail-entry-price">—</span>
+        </div>
+        <div class="trade-detail__item">
+          <span class="trade-detail__label">VWAP <span class="trade-detail__hint" id="detail-vwap-tf"></span></span>
+          <span class="trade-detail__value" id="detail-vwap">—</span>
+        </div>
+        <div class="trade-detail__item">
+          <span class="trade-detail__label">Target</span>
+          <span class="trade-detail__value" id="detail-target">—</span>
+        </div>
+        <div class="trade-detail__item">
+          <span class="trade-detail__label">Stop loss</span>
+          <span class="trade-detail__value" id="detail-stop-loss">—</span>
+        </div>
+      </div>
+      <div class="json-block">
+        <h3 class="json-block__title">Entry API request</h3>
+        <pre class="json-block__code" id="detail-entry-request">—</pre>
+      </div>
+      <div class="json-block">
+        <h3 class="json-block__title">Entry API response</h3>
+        <pre class="json-block__code" id="detail-entry-response">—</pre>
+      </div>
+      <div class="json-block" id="detail-exit-request-wrap" hidden>
+        <h3 class="json-block__title">Exit API request</h3>
+        <pre class="json-block__code" id="detail-exit-request">—</pre>
+      </div>
+      <div class="json-block" id="detail-exit-response-wrap" hidden>
+        <h3 class="json-block__title">Exit API response</h3>
+        <pre class="json-block__code" id="detail-exit-response">—</pre>
+      </div>
+    </div>
+    <footer class="modal__footer">
+      <button type="button" class="btn btn--ghost" data-close-trade-modal>Close</button>
+    </footer>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}

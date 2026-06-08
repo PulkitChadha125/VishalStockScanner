@@ -18,6 +18,15 @@ def list_symbols() -> list[dict]:
     return [symbol_row_to_dict(r) for r in rows]
 
 
+def get_symbol_by_name(symbol_name: str) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM symbol_settings WHERE symbol_name = ? COLLATE NOCASE",
+            (symbol_name.strip(),),
+        ).fetchone()
+    return symbol_row_to_dict(row) if row else None
+
+
 def get_symbol(symbol_id: int) -> dict | None:
     with get_connection() as conn:
         row = conn.execute(
@@ -216,6 +225,7 @@ def create_trade(
     stop_loss: float | None,
     target: float | None,
     entry_time: str | None = None,
+    details: dict | None = None,
 ) -> dict:
     if entry_time is None:
         with get_connection() as conn:
@@ -223,13 +233,15 @@ def create_trade(
                 "SELECT datetime('now', 'localtime')"
             ).fetchone()[0]
 
+    details_json = json.dumps(details) if details else None
+
     with get_connection() as conn:
         cur = conn.execute(
             """
             INSERT INTO trades
                 (symbol_name, side, quantity, entry_time, entry_price,
-                 entry_status, stop_loss, target)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 entry_status, stop_loss, target, details)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol_name.strip(),
@@ -240,6 +252,7 @@ def create_trade(
                 entry_status.upper(),
                 stop_loss,
                 target,
+                details_json,
             ),
         )
         conn.commit()
@@ -255,6 +268,7 @@ def close_trade(
     exit_status: str,
     pnl: float,
     exit_time: str | None = None,
+    details_update: dict | None = None,
 ) -> dict | None:
     if exit_time is None:
         with get_connection() as conn:
@@ -263,27 +277,123 @@ def close_trade(
             ).fetchone()[0]
 
     with get_connection() as conn:
-        cur = conn.execute(
-            """
-            UPDATE trades
-            SET exit_time = ?, exit_price = ?, exit_reason = ?,
-                exit_status = ?, pnl = ?
-            WHERE id = ? AND exit_time IS NULL
-            """,
-            (
-                exit_time,
-                exit_price,
-                exit_reason.upper(),
-                exit_status.upper(),
-                pnl,
-                trade_id,
-            ),
-        )
+        details_json = None
+        if details_update:
+            row = conn.execute(
+                "SELECT details FROM trades WHERE id = ?", (trade_id,)
+            ).fetchone()
+            existing: dict = {}
+            if row and row["details"]:
+                try:
+                    parsed = json.loads(row["details"])
+                    if isinstance(parsed, dict):
+                        existing = parsed
+                except (json.JSONDecodeError, TypeError):
+                    existing = {}
+            existing.update(details_update)
+            details_json = json.dumps(existing)
+
+        if details_json is not None:
+            cur = conn.execute(
+                """
+                UPDATE trades
+                SET exit_time = ?, exit_price = ?, exit_reason = ?,
+                    exit_status = ?, pnl = ?, details = ?
+                WHERE id = ? AND exit_time IS NULL
+                """,
+                (
+                    exit_time,
+                    exit_price,
+                    exit_reason.upper(),
+                    exit_status.upper(),
+                    pnl,
+                    details_json,
+                    trade_id,
+                ),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE trades
+                SET exit_time = ?, exit_price = ?, exit_reason = ?,
+                    exit_status = ?, pnl = ?
+                WHERE id = ? AND exit_time IS NULL
+                """,
+                (
+                    exit_time,
+                    exit_price,
+                    exit_reason.upper(),
+                    exit_status.upper(),
+                    pnl,
+                    trade_id,
+                ),
+            )
         conn.commit()
         if cur.rowcount == 0:
             return None
         row = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
     return trade_row_to_dict(row) if row else None
+
+
+def get_trade(trade_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    return trade_row_to_dict(row) if row else None
+
+
+def merge_trade_details(trade_id: int, updates: dict) -> dict | None:
+    if not updates:
+        return get_trade(trade_id)
+
+    with get_connection() as conn:
+        row = conn.execute("SELECT details FROM trades WHERE id = ?", (trade_id,)).fetchone()
+        if not row:
+            return None
+
+        existing: dict = {}
+        if row["details"]:
+            try:
+                parsed = json.loads(row["details"])
+                if isinstance(parsed, dict):
+                    existing = parsed
+            except (json.JSONDecodeError, TypeError):
+                existing = {}
+
+        existing.update(updates)
+        conn.execute(
+            "UPDATE trades SET details = ? WHERE id = ?",
+            (json.dumps(existing), trade_id),
+        )
+        conn.commit()
+        updated = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
+
+    return trade_row_to_dict(updated) if updated else None
+
+
+def find_entry_app_log_for_trade(trade: dict) -> dict | None:
+    symbol = trade.get("symbol_name")
+    entry_time = trade.get("entry_time")
+    if not symbol or not entry_time:
+        return None
+
+    pattern = f"ENTRY %{symbol}%"
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM app_logs
+            WHERE activity_type = 'strategy'
+              AND description LIKE ?
+              AND datetime(created_at) BETWEEN datetime(?, '-2 minutes')
+                                         AND datetime(?, '+2 minutes')
+            ORDER BY ABS(
+                strftime('%s', created_at) - strftime('%s', ?)
+            ) ASC
+            LIMIT 1
+            """,
+            (pattern, entry_time, entry_time, entry_time),
+        ).fetchone()
+
+    return app_log_row_to_dict(row) if row else None
 
 
 def calc_trade_pnl(side: int, entry_price: float, exit_price: float, quantity: float) -> float:
@@ -455,7 +565,31 @@ def count_trades_today() -> int:
     return int(row["cnt"]) if row else 0
 
 
+def get_open_trade() -> dict | None:
+    """Single open trade (exit_time IS NULL), oldest first."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM trades
+            WHERE exit_time IS NULL
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+    return trade_row_to_dict(row) if row else None
+
+
+def has_open_trade() -> bool:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM trades WHERE exit_time IS NULL LIMIT 1"
+        ).fetchone()
+    return row is not None
+
+
 def can_take_more_trades() -> bool:
+    if has_open_trade():
+        return False
     settings = get_strategy_settings()
     return count_trades_today() < settings["max_trades"]
 

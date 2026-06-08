@@ -177,9 +177,10 @@
             ? `Now ${data.now} (${data.timezone || "—"})`
             : "—";
         } else {
-          const ws = data.ws_active ? "WS" : "REST";
+          const src = data.symbols?.[0]?.book_source === "rest" ? "REST" : "WS";
+          const ws = data.ws_active ? src : "REST";
           updatedEl.textContent = data.updated_at
-            ? `Updated ${data.updated_at} IST (${ws})`
+            ? `Updated ${data.updated_at} IST (${ws}, 1 API call/sec)`
             : "—";
         }
       }
@@ -226,6 +227,16 @@
   });
 
   window.addEventListener("pagehide", stop);
+
+  window.addEventListener("session-reset", () => {
+    lastJson = "";
+    renderBanner({ market_open: false, market_message: "Session reset — log in again." });
+    renderRows(
+      [],
+      false
+    );
+    if (updatedEl) updatedEl.textContent = "Session reset";
+  });
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", start);

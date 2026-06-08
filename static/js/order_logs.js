@@ -14,6 +14,19 @@ const elTotalPnl = document.getElementById("summary-total-pnl");
 const elClosed = document.getElementById("summary-closed");
 const elOpen = document.getElementById("summary-open");
 const elWl = document.getElementById("summary-wl");
+const tradeModal = document.getElementById("trade-detail-modal");
+const detailTitle = document.getElementById("trade-detail-title");
+const detailEntryPrice = document.getElementById("detail-entry-price");
+const detailVwap = document.getElementById("detail-vwap");
+const detailVwapTf = document.getElementById("detail-vwap-tf");
+const detailTarget = document.getElementById("detail-target");
+const detailStopLoss = document.getElementById("detail-stop-loss");
+const detailEntryRequest = document.getElementById("detail-entry-request");
+const detailEntryResponse = document.getElementById("detail-entry-response");
+const detailExitRequestWrap = document.getElementById("detail-exit-request-wrap");
+const detailExitResponseWrap = document.getElementById("detail-exit-response-wrap");
+const detailExitRequest = document.getElementById("detail-exit-request");
+const detailExitResponse = document.getElementById("detail-exit-response");
 
 let todayMode = true;
 let todayIst = todayIso();
@@ -39,6 +52,15 @@ function escapeHtml(text) {
 function formatNum(value) {
   if (value == null) return "—";
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+function formatJson(value) {
+  if (value == null) return "—";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function formatPnl(value) {
@@ -142,6 +164,8 @@ function renderTable(trades) {
 
   trades.forEach((t) => {
     const tr = document.createElement("tr");
+    tr.classList.add("trade-row");
+    tr.dataset.tradeId = String(t.id);
     if (t.is_open) tr.classList.add("row--open");
     tr.innerHTML = `
       <td>${escapeHtml(t.entry_time)}</td>
@@ -165,6 +189,54 @@ function renderTable(trades) {
     `;
     tbody.appendChild(tr);
   });
+}
+
+function openTradeModal() {
+  if (!tradeModal) return;
+  tradeModal.classList.add("is-open");
+  tradeModal.setAttribute("aria-hidden", "false");
+}
+
+function closeTradeModal() {
+  if (!tradeModal) return;
+  tradeModal.classList.remove("is-open");
+  tradeModal.setAttribute("aria-hidden", "true");
+}
+
+function fillTradeModal(trade) {
+  detailTitle.textContent = `${trade.symbol_name} — ${trade.side}`;
+  detailEntryPrice.textContent = formatNum(trade.entry_price);
+  detailVwap.textContent = formatNum(trade.vwap);
+  if (detailVwapTf) {
+    detailVwapTf.textContent = trade.time_frame ? `(${trade.time_frame})` : "";
+  }
+  detailTarget.textContent = formatNum(trade.target);
+  detailStopLoss.textContent = formatNum(trade.stop_loss);
+  detailEntryRequest.textContent = formatJson(trade.entry_api_request);
+  detailEntryResponse.textContent = formatJson(trade.entry_api_response);
+
+  const hasExitRequest = trade.exit_api_request != null;
+  const hasExitResponse = trade.exit_api_response != null;
+  detailExitRequestWrap.hidden = !hasExitRequest;
+  detailExitResponseWrap.hidden = !hasExitResponse;
+  if (hasExitRequest) {
+    detailExitRequest.textContent = formatJson(trade.exit_api_request);
+  }
+  if (hasExitResponse) {
+    detailExitResponse.textContent = formatJson(trade.exit_api_response);
+  }
+}
+
+async function showTradeDetail(tradeId) {
+  try {
+    const res = await fetch(`${API}/${tradeId}`);
+    if (!res.ok) throw new Error();
+    const trade = await res.json();
+    fillTradeModal(trade);
+    openTradeModal();
+  } catch {
+    showToast("Could not load trade details.");
+  }
 }
 
 async function deleteTrade(id) {
@@ -256,8 +328,25 @@ btnDeleteShown.addEventListener("click", deleteShownLogs);
 
 tbody.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-delete-trade]");
-  if (btn) deleteTrade(btn.dataset.deleteTrade);
+  if (btn) {
+    e.stopPropagation();
+    deleteTrade(btn.dataset.deleteTrade);
+    return;
+  }
+  const row = e.target.closest("tr.trade-row");
+  if (row?.dataset.tradeId) showTradeDetail(row.dataset.tradeId);
 });
+
+if (tradeModal) {
+  tradeModal.querySelectorAll("[data-close-trade-modal]").forEach((el) => {
+    el.addEventListener("click", closeTradeModal);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && tradeModal.classList.contains("is-open")) {
+      closeTradeModal();
+    }
+  });
+}
 
 function updateDeleteButtonLabel() {
   if (todayMode && !filterSymbol.value) {

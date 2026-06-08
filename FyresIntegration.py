@@ -736,29 +736,15 @@ def stop_option_websocket(clear_ltp: bool = True):
 
 
 
-def place_order(symbol,quantity,type,side,price):
-    # Set quantity to 1 by default if not provided
+def build_order_payload(symbol, quantity, type, side, price):
     if quantity is None or quantity == 0:
         quantity = 1
     quantity = int(quantity)
     price = float(price)
-    
-    # Keep type as integer (1=Limit, 2=Market)
     order_type = int(type)
-    
-    # Keep side as integer (1=Buy, -1=Sell)
     order_side = int(side)
-    
-    print("quantity: ",quantity)
-    print("price: ",price)
-    print("type: ",order_type)
-    print("side: ",order_side)
-    
-    # For market orders (type=2), set limitPrice to 0
     limit_price = 0 if order_type == 2 else price
-    
-    # Use the exact field names and data types from Fyers API documentation
-    data = {
+    return {
         "symbol": symbol,
         "qty": quantity,
         "type": order_type,
@@ -771,9 +757,14 @@ def place_order(symbol,quantity,type,side,price):
         "offlineOrder": False,
         "stopLoss": 0,
         "takeProfit": 0,
-        "orderTag": "tag1"
+        "orderTag": "tag1",
     }
-    
+
+
+def _execute_order(data):
+    print("quantity: ", data["qty"])
+    print("type: ", data["type"])
+    print("side: ", data["side"])
     print("Order data: ", data)
     response = fyers.place_order(data=data)
     print("response: ", response)
@@ -787,4 +778,14 @@ def place_order(symbol,quantity,type,side,price):
                 flush=True,
             )
     return response
+
+
+def place_order(symbol, quantity, type, side, price):
+    data = build_order_payload(symbol, quantity, type, side, price)
+    return _execute_order(data)
+
+
+def place_order_with_meta(symbol, quantity, type, side, price):
+    data = build_order_payload(symbol, quantity, type, side, price)
+    return {"request": data, "response": _execute_order(data)}
 

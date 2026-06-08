@@ -244,11 +244,17 @@ els.btnStart.addEventListener("click", async () => {
 els.btnStop.addEventListener("click", async () => {
   try {
     const body = await apiRequest(`${STRATEGY_API}/stop`, { method: "POST" });
-    state = body;
+    state = {
+      ...body,
+      api_connected: false,
+      is_running: false,
+      available_balance: null,
+    };
     renderState();
     updatePolling();
-    showAppToast(body.message || "Strategy stopped.");
-    if (window.AppLogger) AppLogger.log("strategy", "Strategy stop button clicked");
+    showAppToast(body.message || "Strategy stopped and session reset.");
+    window.dispatchEvent(new CustomEvent("session-reset"));
+    if (window.AppLogger) AppLogger.log("strategy", "Strategy stop — session reset");
   } catch (err) {
     showAppToast(err.message);
   }

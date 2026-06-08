@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -125,6 +126,10 @@ def init_db(database_path: Path) -> None:
             conn.execute(
                 "INSERT INTO app_meta (key, value) VALUES ('default_timezone_ist', '1')"
             )
+        try:
+            conn.execute("ALTER TABLE trades ADD COLUMN details TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
 
 
@@ -166,7 +171,19 @@ def order_row_to_dict(row: sqlite3.Row) -> dict:
     }
 
 
+def _parse_trade_details(row: sqlite3.Row) -> dict:
+    raw = row["details"] if "details" in row.keys() else None
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
 def trade_row_to_dict(row: sqlite3.Row) -> dict:
+    details = _parse_trade_details(row)
     return {
         "id": row["id"],
         "symbol_name": row["symbol_name"],
@@ -183,6 +200,16 @@ def trade_row_to_dict(row: sqlite3.Row) -> dict:
         "target": row["target"],
         "pnl": row["pnl"],
         "is_open": row["exit_time"] is None,
+        "vwap": details.get("vwap"),
+        "time_frame": details.get("time_frame"),
+        "vwap_candle_count": details.get("vwap_candle_count"),
+        "vwap_api_request": details.get("vwap_api_request"),
+        "vwap_api_response": details.get("vwap_api_response"),
+        "vwap_filter_passed": details.get("vwap_filter_passed"),
+        "entry_api_request": details.get("entry_api_request"),
+        "entry_api_response": details.get("entry_api_response"),
+        "exit_api_request": details.get("exit_api_request"),
+        "exit_api_response": details.get("exit_api_response"),
     }
 
 
