@@ -16,11 +16,19 @@ const elOpen = document.getElementById("summary-open");
 const elWl = document.getElementById("summary-wl");
 const tradeModal = document.getElementById("trade-detail-modal");
 const detailTitle = document.getElementById("trade-detail-title");
+const detailPrevPrevClose = document.getElementById("detail-prev-prev-close");
+const detailPrevClose = document.getElementById("detail-prev-close");
 const detailEntryPrice = document.getElementById("detail-entry-price");
 const detailVwap = document.getElementById("detail-vwap");
 const detailVwapTf = document.getElementById("detail-vwap-tf");
 const detailTarget = document.getElementById("detail-target");
 const detailStopLoss = document.getElementById("detail-stop-loss");
+const detailStopLossPct = document.getElementById("detail-stop-loss-pct");
+const detailTargetPct = document.getElementById("detail-target-pct");
+const detailVolumeThreshold = document.getElementById("detail-volume-threshold");
+const detailVolumeTrigger = document.getElementById("detail-volume-trigger");
+const detailBookBuy = document.getElementById("detail-book-buy");
+const detailBookSell = document.getElementById("detail-book-sell");
 const detailEntryRequest = document.getElementById("detail-entry-request");
 const detailEntryResponse = document.getElementById("detail-entry-response");
 const detailExitRequestWrap = document.getElementById("detail-exit-request-wrap");
@@ -52,6 +60,11 @@ function escapeHtml(text) {
 function formatNum(value) {
   if (value == null) return "—";
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+function formatPct(value) {
+  if (value == null) return "—";
+  return `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`;
 }
 
 function formatJson(value) {
@@ -205,6 +218,12 @@ function closeTradeModal() {
 
 function fillTradeModal(trade) {
   detailTitle.textContent = `${trade.symbol_name} — ${trade.side}`;
+  if (detailPrevPrevClose) {
+    detailPrevPrevClose.textContent = formatNum(trade.prev_prev_close);
+  }
+  if (detailPrevClose) {
+    detailPrevClose.textContent = formatNum(trade.prev_close);
+  }
   detailEntryPrice.textContent = formatNum(trade.entry_price);
   detailVwap.textContent = formatNum(trade.vwap);
   if (detailVwapTf) {
@@ -212,6 +231,24 @@ function fillTradeModal(trade) {
   }
   detailTarget.textContent = formatNum(trade.target);
   detailStopLoss.textContent = formatNum(trade.stop_loss);
+  if (detailStopLossPct) {
+    detailStopLossPct.textContent = formatPct(trade.stop_loss_pct);
+  }
+  if (detailTargetPct) {
+    detailTargetPct.textContent = formatPct(trade.target_pct);
+  }
+  if (detailVolumeThreshold) {
+    detailVolumeThreshold.textContent = formatNum(trade.volume_difference);
+  }
+  if (detailVolumeTrigger) {
+    detailVolumeTrigger.textContent = formatNum(trade.volume_trigger);
+  }
+  if (detailBookBuy) {
+    detailBookBuy.textContent = formatNum(trade.book_buy_qty);
+  }
+  if (detailBookSell) {
+    detailBookSell.textContent = formatNum(trade.book_sell_qty);
+  }
   detailEntryRequest.textContent = formatJson(trade.entry_api_request);
   detailEntryResponse.textContent = formatJson(trade.entry_api_response);
 

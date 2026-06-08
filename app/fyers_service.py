@@ -532,21 +532,65 @@ def _summarize_history_response(response: dict | None) -> dict | None:
     return summary
 
 
-def calculate_vwap_from_candles(df) -> float | None:
-    """Session VWAP from today's candles: sum(tp * vol) / sum(vol)."""
+def _session_candles_df(df) -> pd.DataFrame:
+    """Today's intraday candles used for session VWAP and crossover checks."""
     if df is None or df.empty:
-        return None
+        return pd.DataFrame()
 
     today = _today_market_date()
-    df = df.copy()
-    df["day"] = df["date"].apply(
+    work = df.copy()
+    work["day"] = work["date"].apply(
         lambda x: x.date()
         if hasattr(x, "date")
         else pd.Timestamp(x, tz=market_tz.get_market_timezone()).date()
     )
-    session = df[df["day"] == today]
+    session = work[work["day"] == today]
     if session.empty:
-        session = df
+        session = work
+    return session.sort_values("date").reset_index(drop=True)
+
+
+def _resolution_minutes(time_frame: str) -> int:
+    resolution = timeframe_to_resolution(time_frame)
+    return int(resolution) if resolution else 5
+
+
+def _completed_session_candles(df, time_frame: str) -> pd.DataFrame:
+    """Drop the still-forming candle so only closed bars are used."""
+    session = _session_candles_df(df)
+    if session.empty:
+        return session
+
+    resolution_mins = _resolution_minutes(time_frame)
+    last_start = pd.Timestamp(session.iloc[-1]["date"])
+    if last_start.tzinfo is None:
+        last_start = last_start.tz_localize(market_tz.get_market_timezone())
+    period_end = last_start + pd.Timedelta(minutes=resolution_mins)
+    now = pd.Timestamp(market_tz.now())
+    if now < period_end:
+        session = session.iloc[:-1].reset_index(drop=True)
+    return session
+
+
+def get_last_two_completed_closes(
+    df, time_frame: str
+) -> tuple[float, float] | None:
+    """
+    Previous-to-previous and previous completed candle closes (oldest first).
+    """
+    completed = _completed_session_candles(df, time_frame)
+    if len(completed) < 2:
+        return None
+    prev_prev = float(completed.iloc[-2]["close"])
+    prev = float(completed.iloc[-1]["close"])
+    return prev_prev, prev
+
+
+def calculate_vwap_from_candles(df) -> float | None:
+    """Session VWAP from today's candles: sum(tp * vol) / sum(vol)."""
+    session = _session_candles_df(df)
+    if session.empty:
+        return None
 
     vol = session["volume"].astype(float)
     if vol.sum() <= 0:
@@ -660,6 +704,8 @@ def get_vwap_with_meta(symbol_name: str, time_frame: str) -> dict | None:
             "request": cached[2],
             "response": cached[3],
             "candle_count": cached[4],
+            "prev_prev_close": cached[5] if len(cached) > 5 else None,
+            "prev_close": cached[6] if len(cached) > 6 else None,
         }
 
     result = fetch_history_for_vwap(symbol_name, time_frame)
@@ -667,6 +713,14 @@ def get_vwap_with_meta(symbol_name: str, time_frame: str) -> dict | None:
         return None
 
     vwap = result.get("vwap")
+    closes = (
+        get_last_two_completed_closes(result.get("df"), tf)
+        if result.get("df") is not None
+        else None
+    )
+    prev_prev_close = closes[0] if closes else None
+    prev_close = closes[1] if closes else None
+
     if vwap is not None:
         _vwap_cache[cache_key] = (
             vwap,
@@ -674,6 +728,8 @@ def get_vwap_with_meta(symbol_name: str, time_frame: str) -> dict | None:
             result.get("request"),
             result.get("response"),
             result.get("candle_count"),
+            prev_prev_close,
+            prev_close,
         )
 
     return {
@@ -682,6 +738,9 @@ def get_vwap_with_meta(symbol_name: str, time_frame: str) -> dict | None:
         "request": result.get("request"),
         "response": result.get("response"),
         "candle_count": result.get("candle_count"),
+        "df": result.get("df"),
+        "prev_prev_close": prev_prev_close,
+        "prev_close": prev_close,
     }
 
 
@@ -691,23 +750,68 @@ def get_vwap(symbol_name: str, time_frame: str) -> float | None:
     return meta.get("vwap") if meta else None
 
 
-def passes_vwap_filter(signal: str, entry_price: float, vwap: float) -> tuple[bool, str]:
-    """
-    BUY only if entry > VWAP.
-    SELL only if entry < VWAP.
-    """
+def _vwap_crossover_from_closes(
+    signal: str,
+    vwap: float,
+    prev_prev_close: float,
+    prev_close: float,
+) -> tuple[bool, str, dict]:
+    details = {
+        "vwap": vwap,
+        "prev_prev_close": prev_prev_close,
+        "prev_close": prev_close,
+    }
     if signal == "BUY":
-        if entry_price > vwap:
-            return True, ""
+        if prev_prev_close < vwap and prev_close > vwap:
+            details["crossover"] = "up"
+            return True, "", details
         return (
             False,
-            f"BUY blocked: entry {entry_price:.2f} <= VWAP {vwap:.2f}",
+            (
+                f"BUY blocked: no upward VWAP crossover "
+                f"(prev_prev_close={prev_prev_close:.2f} "
+                f"prev_close={prev_close:.2f} vwap={vwap:.2f})"
+            ),
+            details,
         )
     if signal == "SELL":
-        if entry_price < vwap:
-            return True, ""
+        if prev_prev_close > vwap and prev_close < vwap:
+            details["crossover"] = "down"
+            return True, "", details
         return (
             False,
-            f"SELL blocked: entry {entry_price:.2f} >= VWAP {vwap:.2f}",
+            (
+                f"SELL blocked: no downward VWAP crossover "
+                f"(prev_prev_close={prev_prev_close:.2f} "
+                f"prev_close={prev_close:.2f} vwap={vwap:.2f})"
+            ),
+            details,
         )
-    return False, "Unknown signal"
+    return False, "Unknown signal", details
+
+
+def passes_vwap_crossover_filter(
+    signal: str, vwap_meta: dict, time_frame: str
+) -> tuple[bool, str, dict]:
+    """
+    Entry filter using VWAP crossover on the last two completed candles.
+
+    BUY:  prev_prev close < VWAP and prev close > VWAP (upward cross).
+    SELL: prev_prev close > VWAP and prev close < VWAP (downward cross).
+    """
+    vwap = vwap_meta.get("vwap")
+    if vwap is None:
+        return False, "VWAP unavailable", {}
+
+    df = vwap_meta.get("df")
+    if df is not None:
+        closes = get_last_two_completed_closes(df, time_frame)
+        if closes is None:
+            return False, "VWAP crossover: need at least 2 completed candles", {}
+        return _vwap_crossover_from_closes(signal, vwap, closes[0], closes[1])
+
+    prev_prev = vwap_meta.get("prev_prev_close")
+    prev = vwap_meta.get("prev_close")
+    if prev_prev is None or prev is None:
+        return False, "VWAP crossover: need at least 2 completed candles", {}
+    return _vwap_crossover_from_closes(signal, vwap, prev_prev, prev)

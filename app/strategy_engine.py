@@ -299,22 +299,32 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         )
         return
 
-    vwap_ok, vwap_reason = fyers_service.passes_vwap_filter(signal, entry_price, vwap)
+    vwap_ok, vwap_reason, crossover = fyers_service.passes_vwap_crossover_filter(
+        signal, vwap_meta, time_frame
+    )
     print(
-        f"[VWAP] {symbol['symbol_name']} tf={time_frame} entry={entry_price:.2f} "
-        f"vwap={vwap:.2f} signal={signal} allowed={vwap_ok}",
+        f"[VWAP] {symbol['symbol_name']} tf={time_frame} "
+        f"vwap={vwap:.2f} prev_prev={crossover.get('prev_prev_close')} "
+        f"prev={crossover.get('prev_close')} signal={signal} allowed={vwap_ok}",
         flush=True,
     )
     if not vwap_ok:
         _log_app(
             f"{vwap_reason} on {symbol['symbol_name']}",
-            {"entry_price": entry_price, "vwap": vwap, "signal": signal},
+            {"signal": signal, **crossover},
         )
         return
 
     sl_pct = float(symbol["stop_loss_pct"])
     tgt_pct = float(symbol["target_pct"])
     sl_price, tgt_price = _calc_sl_target(entry_price, side, sl_pct, tgt_pct)
+
+    book_buy = float(depth.get("bid_qty") or 0)
+    book_sell = float(depth.get("ask_qty") or 0)
+    volume_threshold = float(symbol["volume_difference"])
+    buy_diff = book_buy - book_sell
+    sell_diff = book_sell - book_buy
+    volume_trigger = buy_diff if signal == "BUY" else sell_diff
 
     qty = DEFAULT_QTY
     entry_time = _now_market().strftime("%Y-%m-%d %H:%M:%S")
@@ -347,6 +357,15 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         details={
             "vwap": vwap,
             "time_frame": time_frame,
+            "prev_prev_close": crossover.get("prev_prev_close"),
+            "prev_close": crossover.get("prev_close"),
+            "vwap_crossover": crossover.get("crossover"),
+            "stop_loss_pct": sl_pct,
+            "target_pct": tgt_pct,
+            "volume_difference": volume_threshold,
+            "book_buy_qty": book_buy,
+            "book_sell_qty": book_sell,
+            "volume_trigger": volume_trigger,
             "vwap_candle_count": vwap_meta.get("candle_count"),
             "vwap_api_request": vwap_meta.get("request"),
             "vwap_api_response": vwap_meta.get("response"),
@@ -539,13 +558,19 @@ def _scan_for_entry():
         )
         vwap_note = ""
         if signal:
-            entry_preview = ask_price if signal == "BUY" else bid_price
-            vwap_val = fyers_service.get_vwap(sym["symbol_name"], sym["time_frame"])
-            if vwap_val is not None:
-                ok, _ = fyers_service.passes_vwap_filter(
-                    signal, entry_preview, vwap_val
+            vwap_meta = fyers_service.get_vwap_with_meta(
+                sym["symbol_name"], sym["time_frame"]
+            )
+            if vwap_meta and vwap_meta.get("vwap") is not None:
+                ok, _, crossover = fyers_service.passes_vwap_crossover_filter(
+                    signal, vwap_meta, sym["time_frame"]
                 )
-                vwap_note = f" vwap={vwap_val:.2f} vwap_ok={ok}"
+                vwap_note = (
+                    f" vwap={vwap_meta['vwap']:.2f} "
+                    f"prev_prev={crossover.get('prev_prev_close')} "
+                    f"prev={crossover.get('prev_close')} "
+                    f"crossover_ok={ok}"
+                )
             else:
                 vwap_note = " vwap=NA"
 

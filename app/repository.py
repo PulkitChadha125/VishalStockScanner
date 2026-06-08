@@ -396,6 +396,33 @@ def find_entry_app_log_for_trade(trade: dict) -> dict | None:
     return app_log_row_to_dict(row) if row else None
 
 
+def find_signal_app_log_for_trade(trade: dict) -> dict | None:
+    symbol = trade.get("symbol_name")
+    entry_time = trade.get("entry_time")
+    side = trade.get("side")
+    if not symbol or not entry_time or not side:
+        return None
+
+    pattern = f"Signal {side} on {symbol}%"
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM app_logs
+            WHERE activity_type = 'strategy'
+              AND description LIKE ?
+              AND datetime(created_at) BETWEEN datetime(?, '-3 minutes')
+                                         AND datetime(?, '+1 minute')
+            ORDER BY ABS(
+                strftime('%s', created_at) - strftime('%s', ?)
+            ) ASC
+            LIMIT 1
+            """,
+            (pattern, entry_time, entry_time, entry_time),
+        ).fetchone()
+
+    return app_log_row_to_dict(row) if row else None
+
+
 def calc_trade_pnl(side: int, entry_price: float, exit_price: float, quantity: float) -> float:
     if side == 1:
         return (exit_price - entry_price) * quantity

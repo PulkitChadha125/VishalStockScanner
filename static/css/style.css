@@ -27,6 +27,8 @@ body {
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: rgba(37, 99, 235, 0.2);
 }
 
 .layout {
@@ -208,29 +210,26 @@ body {
   font-size: 0.85rem;
 }
 
-@media (max-width: 768px) {
-  .drawer-toggle {
-    display: block;
-  }
+.drawer-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
 
-  .drawer {
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    z-index: 40;
-    transform: translateX(-100%);
-    transition: transform 0.2s;
-    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.5);
-  }
+.drawer-overlay.is-visible {
+  display: block;
+  opacity: 1;
+  pointer-events: auto;
+}
 
-  .drawer.is-open {
-    transform: translateX(0);
-  }
-
-  .layout__main .app {
-    padding-top: 4rem;
-  }
+body.drawer-open {
+  overflow: hidden;
 }
 
 .header {
@@ -542,6 +541,13 @@ body {
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+@media (max-width: 1024px) {
+  .table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 .col-actions {
@@ -962,11 +968,39 @@ body {
   background: rgba(37, 99, 235, 0.08);
 }
 
+.trade-detail__section {
+  margin-bottom: 1.25rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.trade-detail__section:last-of-type {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.trade-detail__section-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 .trade-detail__grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 1rem;
-  margin-bottom: 1.25rem;
+}
+
+.trade-detail__value--buy {
+  color: #4ade80;
+}
+
+.trade-detail__value--sell {
+  color: #f87171;
 }
 
 .trade-detail__label {
@@ -1018,4 +1052,356 @@ body {
   word-break: break-word;
   max-height: 200px;
   overflow: auto;
+}
+
+/* ── Responsive: tablet & mobile ─────────────────────────────────────────── */
+
+.table-wrap--wide {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-wrap--wide::after {
+  content: "";
+  display: block;
+  height: 0;
+}
+
+#order-logs-table {
+  min-width: 1080px;
+}
+
+#symbols-table {
+  min-width: 640px;
+}
+
+#market-book-table {
+  min-width: 820px;
+}
+
+#app-logs-table {
+  min-width: 760px;
+}
+
+/* Tablet (portrait / small laptop) */
+@media (max-width: 1024px) {
+  .table-wrap .data-table th:first-child,
+  .table-wrap .data-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--bg-card);
+    box-shadow: 2px 0 6px rgba(0, 0, 0, 0.15);
+  }
+
+  .table-wrap .data-table thead th:first-child {
+    background: var(--bg-elevated);
+    z-index: 2;
+  }
+  .drawer-toggle {
+    display: block;
+  }
+
+  .drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 40;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.5);
+  }
+
+  .drawer.is-open {
+    transform: translateX(0);
+  }
+
+  .layout__main .app {
+    padding-top: 4.5rem;
+  }
+
+  .strategy-bar__main {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+
+  .strategy-bar__status {
+    flex-wrap: wrap;
+  }
+
+  .strategy-bar__fields {
+    width: 100%;
+  }
+
+  .strategy-bar__actions {
+    margin-left: 0;
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .order-filters__row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .order-filters__actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .cp-field--tz select {
+    max-width: 100%;
+    min-width: 10rem;
+  }
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  .app {
+    padding: 1.25rem 1rem 2.5rem;
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+  }
+
+  .drawer-toggle {
+    top: max(0.75rem, env(safe-area-inset-top));
+    left: max(0.75rem, env(safe-area-inset-left));
+  }
+
+  .header h1 {
+    font-size: 1.4rem;
+  }
+
+  .header__subtitle {
+    margin-left: 0;
+    font-size: 0.85rem;
+    line-height: 1.45;
+  }
+
+  .header__brand {
+    flex-wrap: wrap;
+  }
+
+  .strategy-bar {
+    padding: 0.75rem;
+  }
+
+  .strategy-bar__fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.55rem;
+  }
+
+  .strategy-bar__fields .cp-field {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.2rem;
+  }
+
+  .strategy-bar__fields .cp-field input[type="time"],
+  .strategy-bar__fields .cp-field input[type="number"],
+  .strategy-bar__fields .cp-field select {
+    width: 100%;
+  }
+
+  .strategy-bar__fields #btn-save-settings {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .strategy-bar__actions .btn {
+    flex: 1 1 auto;
+    min-width: 5.5rem;
+    min-height: 2.5rem;
+  }
+
+  .toolbar--symbols {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .toolbar--symbols .btn {
+    width: 100%;
+    min-height: 2.75rem;
+  }
+
+  .order-filters {
+    padding: 0.85rem;
+  }
+
+  .order-filters__row {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+
+  .order-filters__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .order-filters__actions .btn {
+    width: 100%;
+    min-height: 2.75rem;
+  }
+
+  .order-filters .field input,
+  .order-filters .field select {
+    width: 100%;
+    min-height: 2.75rem;
+    font-size: 1rem;
+  }
+
+  .logs-toolbar {
+    justify-content: stretch;
+  }
+
+  .logs-toolbar .btn {
+    width: 100%;
+    min-height: 2.75rem;
+  }
+
+  .pnl-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.65rem;
+  }
+
+  .pnl-summary__card {
+    padding: 0.85rem;
+  }
+
+  .pnl-summary__value {
+    font-size: 1.15rem;
+  }
+
+  .data-table th,
+  .data-table td {
+    padding: 0.65rem 0.75rem;
+    font-size: 0.82rem;
+  }
+
+  .col-actions {
+    width: auto;
+    min-width: 7.5rem;
+  }
+
+  .action-group {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
+  }
+
+  .action-group .btn {
+    width: 100%;
+    min-height: 2.25rem;
+  }
+
+  .market-book {
+    padding: 0.85rem;
+    margin-top: 1.5rem;
+  }
+
+  .market-book__header {
+    flex-direction: column;
+  }
+
+  .market-book__updated {
+    white-space: normal;
+  }
+
+  .field-row {
+    grid-template-columns: 1fr;
+  }
+
+  .modal {
+    padding: 0.5rem;
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+    align-items: flex-end;
+  }
+
+  .modal__dialog,
+  .modal__dialog--wide {
+    max-width: 100%;
+    max-height: 92vh;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  .modal.is-open .modal__dialog {
+    transform: translateY(0);
+  }
+
+  .trade-detail__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .toast {
+    left: max(1rem, env(safe-area-inset-left));
+    right: max(1rem, env(safe-area-inset-right));
+    bottom: max(1rem, env(safe-area-inset-bottom));
+    text-align: center;
+  }
+
+  .btn {
+    min-height: 2.5rem;
+  }
+
+  .btn--sm,
+  .btn--xs {
+    min-height: 2.35rem;
+  }
+
+  .table-wrap--wide::before {
+    content: "Swipe sideways to see all columns →";
+    display: block;
+    padding: 0.45rem 0.75rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+/* Small phones */
+@media (max-width: 400px) {
+  .layout__main .app {
+    padding-top: 4rem;
+  }
+
+  .header h1 {
+    font-size: 1.2rem;
+  }
+
+  .strategy-bar__fields {
+    grid-template-columns: 1fr;
+  }
+
+  .strategy-bar__status .status-pill {
+    font-size: 0.65rem;
+    padding: 0.25rem 0.45rem;
+  }
+
+  .pnl-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .status-pill {
+    font-size: 0.65rem;
+  }
+}
+
+/* Tablet landscape: slightly more room for filters */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .app {
+    padding: 1.5rem 1.25rem 2.5rem;
+  }
+
+  .order-filters__actions {
+    flex-wrap: nowrap;
+  }
+
+  .strategy-bar__actions {
+    gap: 0.5rem;
+  }
 }

@@ -99,32 +99,89 @@
       <button type="button" class="modal__close" data-close-trade-modal aria-label="Close">&times;</button>
     </header>
     <div class="modal__body trade-detail">
-      <div class="trade-detail__grid">
-        <div class="trade-detail__item">
-          <span class="trade-detail__label">Entry price</span>
-          <span class="trade-detail__value" id="detail-entry-price">—</span>
+      <section class="trade-detail__section">
+        <h3 class="trade-detail__section-title">Candle closes &amp; VWAP</h3>
+        <div class="trade-detail__grid">
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Previous-to-previous close</span>
+            <span class="trade-detail__value" id="detail-prev-prev-close">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Previous close</span>
+            <span class="trade-detail__value" id="detail-prev-close">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">VWAP <span class="trade-detail__hint" id="detail-vwap-tf"></span></span>
+            <span class="trade-detail__value" id="detail-vwap">—</span>
+          </div>
         </div>
-        <div class="trade-detail__item">
-          <span class="trade-detail__label">VWAP <span class="trade-detail__hint" id="detail-vwap-tf"></span></span>
-          <span class="trade-detail__value" id="detail-vwap">—</span>
+      </section>
+
+      <section class="trade-detail__section">
+        <h3 class="trade-detail__section-title">Entry levels</h3>
+        <div class="trade-detail__grid">
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Entry price</span>
+            <span class="trade-detail__value" id="detail-entry-price">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Stop loss</span>
+            <span class="trade-detail__value" id="detail-stop-loss">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Target</span>
+            <span class="trade-detail__value" id="detail-target">—</span>
+          </div>
         </div>
-        <div class="trade-detail__item">
-          <span class="trade-detail__label">Target</span>
-          <span class="trade-detail__value" id="detail-target">—</span>
+      </section>
+
+      <section class="trade-detail__section">
+        <h3 class="trade-detail__section-title">Deviation (symbol settings)</h3>
+        <div class="trade-detail__grid">
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Stop loss %</span>
+            <span class="trade-detail__value" id="detail-stop-loss-pct">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Target %</span>
+            <span class="trade-detail__value" id="detail-target-pct">—</span>
+          </div>
         </div>
-        <div class="trade-detail__item">
-          <span class="trade-detail__label">Stop loss</span>
-          <span class="trade-detail__value" id="detail-stop-loss">—</span>
+      </section>
+
+      <section class="trade-detail__section">
+        <h3 class="trade-detail__section-title">Volume at entry</h3>
+        <div class="trade-detail__grid">
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Volume threshold</span>
+            <span class="trade-detail__value" id="detail-volume-threshold">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Volume trigger (diff)</span>
+            <span class="trade-detail__value" id="detail-volume-trigger">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Total buy qty</span>
+            <span class="trade-detail__value trade-detail__value--buy" id="detail-book-buy">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Total sell qty</span>
+            <span class="trade-detail__value trade-detail__value--sell" id="detail-book-sell">—</span>
+          </div>
         </div>
-      </div>
-      <div class="json-block">
-        <h3 class="json-block__title">Entry API request</h3>
-        <pre class="json-block__code" id="detail-entry-request">—</pre>
-      </div>
-      <div class="json-block">
-        <h3 class="json-block__title">Entry API response</h3>
-        <pre class="json-block__code" id="detail-entry-response">—</pre>
-      </div>
+      </section>
+
+      <section class="trade-detail__section">
+        <h3 class="trade-detail__section-title">Fyers API</h3>
+        <div class="json-block">
+          <h4 class="json-block__title">Entry request</h4>
+          <pre class="json-block__code" id="detail-entry-request">—</pre>
+        </div>
+        <div class="json-block">
+          <h4 class="json-block__title">Entry response</h4>
+          <pre class="json-block__code" id="detail-entry-response">—</pre>
+        </div>
+      </section>
       <div class="json-block" id="detail-exit-request-wrap" hidden>
         <h3 class="json-block__title">Exit API request</h3>
         <pre class="json-block__code" id="detail-exit-request">—</pre>

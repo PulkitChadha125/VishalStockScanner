@@ -2,12 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>{% block title %}Trading App{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
   {% block extra_head %}{% endblock %}
 </head>
 <body data-page="{{ active_page }}">
+  <div class="drawer-overlay" id="drawer-overlay" aria-hidden="true"></div>
   <div class="layout">
     <aside class="drawer" id="app-drawer">
       <div class="drawer__brand">

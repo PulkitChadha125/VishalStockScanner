@@ -94,11 +94,38 @@
 
     const toggle = document.getElementById("drawer-toggle");
     const drawer = document.getElementById("app-drawer");
+    const overlay = document.getElementById("drawer-overlay");
+
+    function setDrawerOpen(open) {
+      if (!drawer) return;
+      drawer.classList.toggle("is-open", open);
+      document.body.classList.toggle("drawer-open", open);
+      if (overlay) {
+        overlay.classList.toggle("is-visible", open);
+        overlay.setAttribute("aria-hidden", open ? "false" : "true");
+      }
+    }
+
     if (toggle && drawer) {
       toggle.addEventListener("click", () => {
-        drawer.classList.toggle("is-open");
+        const open = !drawer.classList.contains("is-open");
+        setDrawerOpen(open);
         AppLogger.logClick("Toggle navigation drawer", "#drawer-toggle");
       });
     }
+
+    if (overlay && drawer) {
+      overlay.addEventListener("click", () => setDrawerOpen(false));
+    }
+
+    drawer?.querySelectorAll(".drawer__link").forEach((link) => {
+      link.addEventListener("click", () => setDrawerOpen(false));
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && drawer?.classList.contains("is-open")) {
+        setDrawerOpen(false);
+      }
+    });
   });
 })();
