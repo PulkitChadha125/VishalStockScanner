@@ -69,8 +69,14 @@ def _tick():
 
     login_just_succeeded = False
 
-    # Auto login once/day at or after 09:00
+    # Auto login once/day at or after 09:00 — clear any prior-day open trades first
     if now_t >= login_t and _logged_in_date != tkey:
+        stale = repository.finalize_stale_open_trades()
+        if stale:
+            _log(
+                "New day: closed prior-session open trades before login",
+                {"trade_ids": stale},
+            )
         ok, err, bal = fyers_service.login_from_csv()
         if ok:
             repository.set_api_connected(True)
@@ -125,15 +131,30 @@ def _tick():
     # Auto stop once/day at or after configured stop time
     if now_t >= stop_t and _stopped_date != tkey:
         if strategy_engine.is_engine_running() or repository.get_strategy_settings().get("is_running"):
-            strategy_engine.stop(square_off=True)
+            strategy_engine.stop(square_off=True, exit_reason="EOD")
             _log(
-                "Auto-stopped strategy at configured stop time",
+                "Auto-stopped strategy at configured stop time (open positions squared off)",
                 {"stop_time": settings["stop_time"]},
             )
+        else:
+            closed = repository.square_off_todays_open_trades("EOD")
+            stale = repository.finalize_stale_open_trades()
+            if closed or stale:
+                _log(
+                    "Stop time: squared off open trades",
+                    {
+                        "today_closed": closed,
+                        "prior_day_closed": stale,
+                        "stop_time": settings["stop_time"],
+                    },
+                )
         _stopped_date = tkey
+        _started_date = None
 
 
 def _run():
+    global _logged_in_date, _started_date, _stopped_date
+
     _log("Scheduler thread started")
     last_day = _today_key()
 
@@ -143,7 +164,9 @@ def _run():
             today = _today_key()
             if today != last_day:
                 last_day = today
-                # keep references; new day will refresh naturally
+                _logged_in_date = None
+                _started_date = None
+                _stopped_date = None
             _tick()
         except Exception as e:
             _log("Scheduler tick error", {"error": str(e)})

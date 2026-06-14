@@ -593,25 +593,109 @@ def count_trades_today() -> int:
 
 
 def get_open_trade() -> dict | None:
-    """Single open trade (exit_time IS NULL), oldest first."""
+    """Today's single open trade (filled or paper), oldest first."""
+    today = market_tz.today_key_ist()
     with get_connection() as conn:
         row = conn.execute(
             """
             SELECT * FROM trades
             WHERE exit_time IS NULL
+              AND date(entry_time) = date(?)
             ORDER BY id ASC
             LIMIT 1
-            """
+            """,
+            (today,),
         ).fetchone()
     return trade_row_to_dict(row) if row else None
 
 
 def has_open_trade() -> bool:
+    today = market_tz.today_key_ist()
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT 1 FROM trades WHERE exit_time IS NULL LIMIT 1"
+            """
+            SELECT 1 FROM trades
+            WHERE exit_time IS NULL
+              AND date(entry_time) = date(?)
+            LIMIT 1
+            """,
+            (today,),
         ).fetchone()
     return row is not None
+
+
+def list_open_trades_today() -> list[dict]:
+    today = market_tz.today_key_ist()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM trades
+            WHERE exit_time IS NULL
+              AND date(entry_time) = date(?)
+            ORDER BY id ASC
+            """,
+            (today,),
+        ).fetchall()
+    return [trade_row_to_dict(r) for r in rows]
+
+
+def finalize_stale_open_trades() -> list[int]:
+    """Close open trades from prior days — new session starts with a clean slate."""
+    today = market_tz.today_key_ist()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM trades
+            WHERE exit_time IS NULL
+              AND date(entry_time) < date(?)
+            ORDER BY id ASC
+            """,
+            (today,),
+        ).fetchall()
+
+    closed_ids: list[int] = []
+    for row in rows:
+        trade = trade_row_to_dict(row)
+        closed = close_trade(
+            trade_id=trade["id"],
+            exit_price=trade["entry_price"],
+            exit_reason="EOD",
+            exit_status=(
+                "PAPER" if trade["entry_status"] != "FILLED" else "SKIPPED"
+            ),
+            pnl=0.0,
+        )
+        if closed:
+            closed_ids.append(trade["id"])
+    return closed_ids
+
+
+def square_off_todays_open_trades(exit_reason: str = "EOD") -> list[int]:
+    """Time-based exit for all still-open trades today (at configured stop time)."""
+    from app import fyers_service
+
+    closed_ids: list[int] = []
+    for trade in list_open_trades_today():
+        ltp = (
+            fyers_service.get_ltp(trade["symbol_name"])
+            or trade["entry_price"]
+        )
+        side = 1 if trade["side"] == "BUY" else -1
+        pnl = calc_trade_pnl(
+            side, trade["entry_price"], ltp, trade["quantity"]
+        )
+        closed = close_trade(
+            trade_id=trade["id"],
+            exit_price=ltp,
+            exit_reason=exit_reason,
+            exit_status=(
+                "PAPER" if trade["entry_status"] != "FILLED" else "SKIPPED"
+            ),
+            pnl=pnl,
+        )
+        if closed:
+            closed_ids.append(trade["id"])
+    return closed_ids
 
 
 def can_take_more_trades() -> bool:

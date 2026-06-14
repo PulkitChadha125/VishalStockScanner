@@ -53,6 +53,12 @@ def _in_trading_window(start_hhmm: str, stop_hhmm: str) -> bool:
     return start <= now < end
 
 
+def _at_or_past_stop_time(stop_hhmm: str) -> bool:
+    now = _now_market().time()
+    eh, em = map(int, stop_hhmm.split(":"))
+    return now >= dt_time(eh, em)
+
+
 def is_in_trading_window(
     start_hhmm: str | None = None, stop_hhmm: str | None = None
 ) -> bool:
@@ -375,7 +381,14 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         },
     )
 
-    # Track position in backend even when Fyers rejects the order (paper SL/target).
+    if entry_status != "FILLED":
+        print(
+            f"[ENTRY] {symbol['symbol_name']} {signal} rejected by Fyers — "
+            f"tracking paper SL/target from entry {entry_price:.2f}",
+            flush=True,
+        )
+
+    # Track SL/target from entry price (paper position when broker rejects entry).
     with _lock:
         _open_position = OpenPosition(
             trade_id=trade["id"],
@@ -409,11 +422,17 @@ def _exit_trade(reason: str, exit_price: float | None = None):
         fyers_service.get_ltp(pos.symbol_name) or pos.entry_price
     )
     exit_time = _now_market().strftime("%Y-%m-%d %H:%M:%S")
-    order_result = fyers_service.place_market_order(
-        pos.symbol_name, exit_side, pos.quantity
-    )
-    resp = order_result.get("response")
-    exit_status = fyers_service.order_status_label(resp)
+    is_paper = pos.entry_status != "FILLED"
+    if is_paper:
+        order_result = {"request": None, "response": None}
+        resp = None
+        exit_status = "PAPER"
+    else:
+        order_result = fyers_service.place_market_order(
+            pos.symbol_name, exit_side, pos.quantity
+        )
+        resp = order_result.get("response")
+        exit_status = fyers_service.order_status_label(resp)
     pnl = repository.calc_trade_pnl(
         pos.side, pos.entry_price, ltp, pos.quantity
     )
@@ -458,7 +477,6 @@ def _monitor_open_position():
         pos = _open_position
     if not pos:
         return
-
     ltp = fyers_service.get_ltp(pos.symbol_name)
     if ltp is None:
         return
@@ -615,6 +633,11 @@ def _tick():
         return
 
     if not _in_trading_window(settings["start_time"], settings["stop_time"]):
+        if (
+            _at_or_past_stop_time(settings["stop_time"])
+            and _has_open_position()
+        ):
+            _square_off_all_open_positions("EOD")
         return
 
     fyers_service.fetch_balance()
@@ -643,6 +666,22 @@ def _run_loop():
         _thread = None
 
 
+def _square_off_all_open_positions(reason: str) -> None:
+    """Exit every open position for today — broker-filled or paper (rejected entry)."""
+    _sync_open_position_from_db()
+    for _ in range(8):
+        with _lock:
+            has_mem = _open_position is not None
+        if has_mem:
+            _exit_trade(reason)
+            continue
+        trade = repository.get_open_trade()
+        if not trade:
+            break
+        _restore_open_position_from_trade(trade)
+        _exit_trade(reason)
+
+
 def start() -> tuple[bool, str]:
     global _thread
 
@@ -658,6 +697,13 @@ def start() -> tuple[bool, str]:
     if is_engine_running():
         return False, "Strategy engine is already running."
 
+    stale = repository.finalize_stale_open_trades()
+    if stale:
+        _log_app(
+            f"Cleared {len(stale)} stale open trade(s) before session start",
+            {"trade_ids": stale},
+        )
+
     _sync_open_position_from_db()
 
     _stop_event.clear()
@@ -668,15 +714,12 @@ def start() -> tuple[bool, str]:
     return True, ""
 
 
-def stop(square_off: bool = True) -> tuple[bool, str]:
+def stop(square_off: bool = True, exit_reason: str = "STOP") -> tuple[bool, str]:
     _stop_event.set()
     repository.set_strategy_running(False)
 
     if square_off:
-        with _lock:
-            has_open = _open_position is not None
-        if has_open:
-            _exit_trade("STOP")
+        _square_off_all_open_positions(exit_reason)
 
     if _thread and _thread.is_alive():
         _thread.join(timeout=3.0)
