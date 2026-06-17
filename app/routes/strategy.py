@@ -220,10 +220,19 @@ def start_strategy():
 def stop_strategy():
     strategy_engine.get_engine_status()
     was_running = strategy_engine.is_engine_running()
+    extra_details: dict = {}
 
     if was_running:
         strategy_engine.stop(square_off=True)
     else:
+        # If engine is already down, still close any DB-open trades so logs do not stay OPEN.
+        closed_today = repository.square_off_todays_open_trades("STOP")
+        closed_stale = repository.finalize_stale_open_trades()
+        if closed_today or closed_stale:
+            extra_details = {
+                "today_closed_trade_ids": closed_today,
+                "stale_closed_trade_ids": closed_stale,
+            }
         repository.set_strategy_running(False)
         strategy_engine.reset_session_state()
 
@@ -232,7 +241,10 @@ def stop_strategy():
     strategy_scheduler.on_manual_stop()
 
     status = strategy_engine.get_engine_status()
-    _log("Strategy stopped — session reset (API disconnected, feeds cleared)")
+    _log(
+        "Strategy stopped — session reset (API disconnected, feeds cleared)",
+        extra_details or None,
+    )
     return jsonify(
         {
             **status,
