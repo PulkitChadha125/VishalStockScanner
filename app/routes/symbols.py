@@ -2,7 +2,7 @@ from datetime import datetime
 
 from flask import Blueprint, Response, jsonify, request
 
-from app import fyers_service, market_tz, repository
+from app import fyers_service, market_tz, repository, strategy_engine
 from app.symbols_csv import parse_symbols_csv, symbols_to_csv
 
 symbols_bp = Blueprint("symbols", __name__)
@@ -122,6 +122,23 @@ def market_book_snapshot():
         )
 
     rows: list[dict] = []
+    engine_status = strategy_engine.get_engine_status()
+    strategy_running = bool(engine_status.get("is_running"))
+    can_trade = bool(engine_status.get("can_take_more_trades"))
+    open_position = engine_status.get("open_position")
+    open_symbol = open_position["symbol_name"] if open_position else None
+
+    if not strategy_running:
+        trade_block_reason = "Strategy is stopped — click Start to take trades"
+    elif open_symbol:
+        trade_block_reason = f"Open trade in {open_symbol} — waiting for SL, target, or time exit"
+    elif not can_trade:
+        taken = engine_status.get("trades_taken_today", 0)
+        max_trades = engine_status.get("max_trades", 0)
+        trade_block_reason = f"Daily trade limit reached ({taken}/{max_trades})"
+    else:
+        trade_block_reason = None
+
     for sym in symbols:
         name = sym["symbol_name"]
         depth = fyers_service.get_market_depth(name)
@@ -144,6 +161,20 @@ def market_book_snapshot():
             signal = "SELL"
         elif buy_diff >= threshold:
             signal = "BUY"
+        vwap_signal = None
+        vwap_ok = None
+        vwap_reason = None
+        if signal:
+            vwap_meta = fyers_service.get_vwap_with_meta(name, sym["time_frame"])
+            vwap_ok, vwap_reason, _ = fyers_service.passes_vwap_crossover_filter(
+                signal,
+                vwap_meta or {},
+                sym["time_frame"],
+            )
+            if vwap_ok:
+                vwap_signal = signal
+
+        trade_ready = bool(signal and vwap_signal and can_trade and strategy_running)
 
         total = book_buy + book_sell
         bid_pct = round((book_buy / total) * 100, 2) if total > 0 else 0
@@ -162,6 +193,10 @@ def market_book_snapshot():
                 "sell_diff": sell_diff,
                 "volume_diff": threshold,
                 "signal": signal,
+                "vwap_signal": vwap_signal,
+                "vwap_ok": vwap_ok,
+                "vwap_reason": vwap_reason,
+                "trade_ready": trade_ready,
                 "cache_age_sec": depth.get("cache_age_sec"),
                 "book_source": depth.get("book_source", "rest"),
             }
@@ -178,6 +213,10 @@ def market_book_snapshot():
             "timezone": session["timezone"],
             "now": session["now"],
             "updated_at": market_tz.now_ist().strftime("%H:%M:%S"),
+            "strategy_running": strategy_running,
+            "can_take_trades": can_trade and strategy_running and not open_symbol,
+            "trade_block_reason": trade_block_reason,
+            "open_position_symbol": open_symbol,
             "symbols": rows,
         }
     )

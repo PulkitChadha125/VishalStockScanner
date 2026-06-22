@@ -17,7 +17,7 @@ _stop = threading.Event()
 _lock = threading.Lock()
 _logged_in_date: str | None = None
 _started_date: str | None = None
-_stopped_date: str | None = None
+_eod_handled_date: str | None = None
 
 
 def _now() -> datetime:
@@ -56,7 +56,7 @@ def _log(msg: str, details: dict | None = None):
 
 
 def _tick():
-    global _logged_in_date, _started_date, _stopped_date
+    global _logged_in_date, _started_date, _eod_handled_date
 
     now = _now()
     tkey = _today_key()
@@ -96,7 +96,7 @@ def _tick():
         ok, err = strategy_engine.start()
         if ok:
             _started_date = tkey
-            _stopped_date = None
+            _eod_handled_date = None
             _log(
                 "Strategy started after login (trading window active — fetching symbol depth)",
                 {"start_time": settings["start_time"], "stop_time": settings["stop_time"]},
@@ -120,7 +120,7 @@ def _tick():
         ok, err = strategy_engine.start()
         if ok:
             _started_date = tkey
-            _stopped_date = None
+            _eod_handled_date = None
             _log(
                 "Auto-started strategy at configured start time",
                 {"start_time": settings["start_time"]},
@@ -128,32 +128,31 @@ def _tick():
         else:
             _log("Auto-start skipped", {"reason": err})
 
-    # Auto stop once/day at or after configured stop time
-    if now_t >= stop_t and _stopped_date != tkey:
-        if strategy_engine.is_engine_running() or repository.get_strategy_settings().get("is_running"):
-            strategy_engine.stop(square_off=True, exit_reason="EOD")
-            _log(
-                "Auto-stopped strategy at configured stop time (open positions squared off)",
-                {"stop_time": settings["stop_time"]},
-            )
+    # Auto stop once/day at or after configured stop time — always square off open trades.
+    if now_t >= stop_t and _eod_handled_date != tkey:
+        closed = strategy_engine.square_off_all_open_trades("EOD")
+        stale = repository.finalize_stale_open_trades()
+
+        if strategy_engine.is_engine_running():
+            strategy_engine.stop(square_off=False, exit_reason="EOD")
         else:
-            closed = repository.square_off_todays_open_trades("EOD")
-            stale = repository.finalize_stale_open_trades()
-            if closed or stale:
-                _log(
-                    "Stop time: squared off open trades",
-                    {
-                        "today_closed": closed,
-                        "prior_day_closed": stale,
-                        "stop_time": settings["stop_time"],
-                    },
-                )
-        _stopped_date = tkey
+            repository.set_strategy_running(False)
+            strategy_engine.reset_session_state()
+
+        _log(
+            "Auto-stopped strategy at configured stop time (open positions squared off)",
+            {
+                "stop_time": settings["stop_time"],
+                "today_closed": closed,
+                "prior_day_closed": stale,
+            },
+        )
+        _eod_handled_date = tkey
         _started_date = None
 
 
 def _run():
-    global _logged_in_date, _started_date, _stopped_date
+    global _logged_in_date, _started_date, _eod_handled_date
 
     _log("Scheduler thread started")
     last_day = _today_key()
@@ -166,7 +165,7 @@ def _run():
                 last_day = today
                 _logged_in_date = None
                 _started_date = None
-                _stopped_date = None
+                _eod_handled_date = None
             _tick()
         except Exception as e:
             _log("Scheduler tick error", {"error": str(e)})
@@ -176,9 +175,8 @@ def _run():
 
 
 def on_manual_stop() -> None:
-    """Record manual stop so scheduler state stays consistent for the day."""
-    global _stopped_date
-    _stopped_date = _today_key()
+    """Manual stop must not block the 4 PM EOD square-off handler."""
+    return
 
 
 def start_scheduler():

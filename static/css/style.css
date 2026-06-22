@@ -198,6 +198,16 @@ body {
   background: rgba(239, 68, 68, 0.15);
 }
 
+.badge--entry {
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.badge--exit {
+  color: #c4b5fd;
+  background: rgba(168, 85, 247, 0.15);
+}
+
 .badge--activity {
   color: var(--blue-hover);
   background: rgba(37, 99, 235, 0.15);
@@ -880,6 +890,12 @@ body.drawer-open {
   color: #facc15;
 }
 
+.market-book__banner--warn {
+  background: rgba(249, 115, 22, 0.12);
+  border: 1px solid rgba(249, 115, 22, 0.35);
+  color: #fdba74;
+}
+
 .market-book__status {
   color: var(--text-muted);
   font-size: 0.88rem;
@@ -947,6 +963,10 @@ body.drawer-open {
 .book-signal--none {
   color: var(--text-muted);
   font-weight: 500;
+}
+
+.book-signal--ready {
+  box-shadow: 0 0 0 1px currentColor;
 }
 
 .modal__dialog--wide {

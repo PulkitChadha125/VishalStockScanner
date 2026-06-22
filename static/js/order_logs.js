@@ -164,10 +164,28 @@ function renderSummary(summary) {
   elWl.textContent = `${summary?.wins ?? 0} / ${summary?.losses ?? 0}`;
 }
 
-function renderTable(trades) {
+function exitReasonLabel(reason) {
+  if (!reason) return "—";
+  const labels = {
+    SL: "Stop loss",
+    TARGET: "Target",
+    EOD: "Time exit",
+    SESSION: "Session stopped",
+    MANUAL: "Session stopped",
+    STOP: "Session stopped",
+  };
+  return labels[reason] || reason;
+}
+
+function eventTypeBadge(eventType) {
+  const cls = eventType === "ENTRY" ? "badge--entry" : "badge--exit";
+  return `<span class="badge ${cls}">${escapeHtml(eventType)}</span>`;
+}
+
+function renderTable(events) {
   tbody.querySelectorAll("tr:not(#order-empty-row)").forEach((r) => r.remove());
 
-  if (!trades.length) {
+  if (!events.length) {
     emptyRow.hidden = false;
     updateEmptyMessage();
     return;
@@ -175,27 +193,31 @@ function renderTable(trades) {
 
   emptyRow.hidden = true;
 
-  trades.forEach((t) => {
+  events.forEach((ev) => {
     const tr = document.createElement("tr");
     tr.classList.add("trade-row");
-    tr.dataset.tradeId = String(t.id);
-    if (t.is_open) tr.classList.add("row--open");
+    tr.dataset.tradeId = String(ev.trade_id);
+    if (ev.event_type === "ENTRY" && ev.is_open) tr.classList.add("row--open");
+
+    const isEntry = ev.event_type === "ENTRY";
+    const reasonCell = isEntry
+      ? (ev.is_open ? '<span class="status-pill status-pill--open">OPEN</span>' : "—")
+      : escapeHtml(exitReasonLabel(ev.exit_reason));
+
     tr.innerHTML = `
-      <td>${escapeHtml(t.entry_time)}</td>
-      <td>${escapeHtml(t.exit_time)}</td>
-      <td><strong>${escapeHtml(t.symbol_name)}</strong></td>
-      <td><span class="badge badge--${t.side.toLowerCase()}">${escapeHtml(t.side)}</span></td>
-      <td>${formatNum(t.quantity)}</td>
-      <td>${formatNum(t.entry_price)}</td>
-      <td>${formatNum(t.exit_price)}</td>
-      <td>${escapeHtml(t.exit_reason)}</td>
-      <td><span class="status-pill status-pill--${(t.entry_status || "").toLowerCase()}">${escapeHtml(t.entry_status)}</span></td>
-      <td><span class="status-pill status-pill--${(t.exit_status || "open").toLowerCase()}">${escapeHtml(t.exit_status || (t.is_open ? "OPEN" : "—"))}</span></td>
-      <td>${formatNum(t.stop_loss)}</td>
-      <td>${formatNum(t.target)}</td>
-      <td class="${pnlClass(t.pnl)}">${formatPnl(t.pnl)}</td>
+      <td>${escapeHtml(ev.time)}</td>
+      <td>${eventTypeBadge(ev.event_type)}</td>
+      <td><strong>${escapeHtml(ev.symbol_name)}</strong></td>
+      <td><span class="badge badge--${ev.side.toLowerCase()}">${escapeHtml(ev.side)}</span></td>
+      <td>${formatNum(ev.quantity)}</td>
+      <td>${formatNum(ev.price)}</td>
+      <td>${reasonCell}</td>
+      <td><span class="status-pill status-pill--${(ev.status || "").toLowerCase()}">${escapeHtml(ev.status)}</span></td>
+      <td>${isEntry ? formatNum(ev.stop_loss) : "—"}</td>
+      <td>${isEntry ? formatNum(ev.target) : "—"}</td>
+      <td class="${pnlClass(ev.pnl)}">${isEntry ? "—" : formatPnl(ev.pnl)}</td>
       <td>
-        <button type="button" class="btn btn--sm btn--delete" data-delete-trade="${t.id}">
+        <button type="button" class="btn btn--sm btn--delete" data-delete-trade="${ev.trade_id}">
           Delete
         </button>
       </td>
@@ -325,7 +347,7 @@ async function loadOrders() {
     const data = await res.json();
     if (data.today_ist) todayIst = data.today_ist;
     renderSummary(data.summary);
-    renderTable(data.trades || []);
+    renderTable(data.events || []);
     if (todayMode) {
       filterFrom.value = todayIst;
       filterTo.value = todayIst;

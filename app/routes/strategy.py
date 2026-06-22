@@ -225,8 +225,7 @@ def stop_strategy():
     if was_running:
         strategy_engine.stop(square_off=True)
     else:
-        # If engine is already down, still close any DB-open trades so logs do not stay OPEN.
-        closed_today = repository.square_off_todays_open_trades("STOP")
+        closed_today = strategy_engine.square_off_all_open_trades("SESSION")
         closed_stale = repository.finalize_stale_open_trades()
         if closed_today or closed_stale:
             extra_details = {

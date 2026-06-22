@@ -8,7 +8,7 @@
     <span class="header__logo"></span>
     <h1>Order Logs</h1>
   </div>
-  <p class="header__subtitle">Trade history with P&amp;L — includes broker-rejected orders tracked in backend</p>
+  <p class="header__subtitle">Entry and exit as separate rows — P&amp;L on exit only</p>
 </header>
 
 <main class="main">
@@ -66,16 +66,14 @@
     <table class="data-table" id="order-logs-table">
       <thead>
         <tr>
-          <th>Entry time</th>
-          <th>Exit time</th>
+          <th>Time</th>
+          <th>Type</th>
           <th>Symbol</th>
           <th>Side</th>
           <th>Qty</th>
-          <th>Entry</th>
-          <th>Exit</th>
+          <th>Price</th>
           <th>Exit reason</th>
-          <th>Entry status</th>
-          <th>Exit status</th>
+          <th>Status</th>
           <th>Stop loss</th>
           <th>Target</th>
           <th>P&amp;L</th>
@@ -84,7 +82,7 @@
       </thead>
       <tbody id="order-logs-tbody">
         <tr class="empty-row" id="order-empty-row">
-          <td colspan="14">No trades in this period.</td>
+          <td colspan="12">No trades in this period.</td>
         </tr>
       </tbody>
     </table>

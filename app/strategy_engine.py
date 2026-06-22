@@ -153,30 +153,33 @@ def get_open_position() -> dict | None:
         return asdict(_open_position) if _open_position else None
 
 
-def _restore_open_position_from_trade(trade: dict) -> None:
-    global _open_position
-
+def _position_from_trade(trade: dict) -> OpenPosition:
     sym = repository.get_symbol_by_name(trade["symbol_name"])
     side = 1 if trade["side"] == "BUY" else -1
     sl_pct = float(sym["stop_loss_pct"]) if sym else 0.0
     tgt_pct = float(sym["target_pct"]) if sym else 0.0
+    return OpenPosition(
+        trade_id=trade["id"],
+        symbol_name=trade["symbol_name"],
+        fyers_symbol=fyers_service.to_fyers_symbol(trade["symbol_name"]),
+        side=side,
+        side_label=trade["side"],
+        entry_price=float(trade["entry_price"]),
+        quantity=int(trade["quantity"]),
+        stop_loss_pct=sl_pct,
+        target_pct=tgt_pct,
+        stop_loss_price=float(trade["stop_loss"] or 0),
+        target_price=float(trade["target"] or 0),
+        opened_at=trade["entry_time"],
+        entry_status=trade["entry_status"],
+    )
+
+
+def _restore_open_position_from_trade(trade: dict) -> None:
+    global _open_position
 
     with _lock:
-        _open_position = OpenPosition(
-            trade_id=trade["id"],
-            symbol_name=trade["symbol_name"],
-            fyers_symbol=fyers_service.to_fyers_symbol(trade["symbol_name"]),
-            side=side,
-            side_label=trade["side"],
-            entry_price=float(trade["entry_price"]),
-            quantity=int(trade["quantity"]),
-            stop_loss_pct=sl_pct,
-            target_pct=tgt_pct,
-            stop_loss_price=float(trade["stop_loss"] or 0),
-            target_price=float(trade["target"] or 0),
-            opened_at=trade["entry_time"],
-            entry_status=trade["entry_status"],
-        )
+        _open_position = _position_from_trade(trade)
 
 
 def _sync_open_position_from_db() -> bool:
@@ -265,6 +268,45 @@ def _evaluate_signal(
     return None
 
 
+def _vwap_allows_entry(sym: dict, signal: str) -> tuple[bool, dict]:
+    time_frame = sym["time_frame"]
+    vwap_meta = fyers_service.get_vwap_with_meta(sym["symbol_name"], time_frame)
+    if not vwap_meta or vwap_meta.get("vwap") is None:
+        return False, {}
+    ok, _, crossover = fyers_service.passes_vwap_crossover_filter(
+        signal, vwap_meta, time_frame
+    )
+    return ok, crossover
+
+
+def _entry_candidate(sym: dict, depth: dict) -> dict | None:
+    """Volume signal + VWAP confluence for one symbol."""
+    if not depth or depth.get("error"):
+        return None
+    if not fyers_service.has_book_totals(depth):
+        return None
+
+    bid_qty = float(depth["bid_qty"])
+    ask_qty = float(depth["ask_qty"])
+    volume_diff = float(sym["volume_difference"])
+    signal = _evaluate_signal(bid_qty, ask_qty, volume_diff)
+    if not signal:
+        return None
+
+    vwap_ok, crossover = _vwap_allows_entry(sym, signal)
+    if not vwap_ok:
+        return None
+
+    margin = (ask_qty - bid_qty) if signal == "SELL" else (bid_qty - ask_qty)
+    return {
+        "sym": sym,
+        "signal": signal,
+        "depth": depth,
+        "margin": margin,
+        "crossover": crossover,
+    }
+
+
 def _enter_trade(symbol: dict, signal: str, depth: dict):
     global _open_position, _last_signal
 
@@ -286,7 +328,7 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         _log_app(f"Entry skipped — no price for {symbol['symbol_name']}")
         return
 
-    time_frame = symbol.get("time_frame", "5m")
+    time_frame = symbol["time_frame"]
     vwap_meta = fyers_service.get_vwap_with_meta(symbol["symbol_name"], time_frame)
     vwap = vwap_meta.get("vwap") if vwap_meta else None
     if vwap is None:
@@ -331,6 +373,17 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
     buy_diff = book_buy - book_sell
     sell_diff = book_sell - book_buy
     volume_trigger = buy_diff if signal == "BUY" else sell_diff
+
+    if repository.has_open_trade():
+        open_trade = repository.get_open_trade()
+        sym_name = open_trade["symbol_name"] if open_trade else "?"
+        _log_app(
+            f"Entry blocked — open trade in {sym_name} must exit "
+            "(stop loss, target, or time exit) before a new entry",
+            {"blocked_signal": signal, "symbol": symbol["symbol_name"]},
+        )
+        _last_signal = f"BLOCKED_{sym_name}"
+        return
 
     qty = DEFAULT_QTY
     entry_time = _now_market().strftime("%Y-%m-%d %H:%M:%S")
@@ -380,6 +433,14 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
             "entry_api_response": resp,
         },
     )
+    if not trade:
+        _log_app(
+            f"Entry not recorded — open trade already exists "
+            f"(blocked {signal} on {symbol['symbol_name']})",
+            {"entry_status": entry_status, "entry_price": entry_price},
+        )
+        _last_signal = "BLOCKED_OPEN_TRADE"
+        return
 
     if entry_status != "FILLED":
         print(
@@ -408,19 +469,39 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         _last_signal = f"{signal} {symbol['symbol_name']}"
 
 
-def _exit_trade(reason: str, exit_price: float | None = None):
-    global _open_position
+def _resolve_exit_price(
+    symbol_name: str, side: int, entry_price: float
+) -> float | None:
+    ltp = fyers_service.get_ltp(symbol_name)
+    if ltp is not None:
+        return ltp
 
-    with _lock:
-        pos = _open_position
-        if not pos:
-            return
-        _open_position = None
+    depth = fyers_service.get_market_depth(symbol_name)
+    if depth and not depth.get("error"):
+        price_key = "bid_price" if side == 1 else "ask_price"
+        price = depth.get(price_key)
+        if price is not None and float(price) > 0:
+            return float(price)
+
+    return None
+
+
+def _close_position_with_logs(
+    pos: OpenPosition,
+    reason: str,
+    exit_price: float | None = None,
+) -> dict | None:
+    existing = repository.get_trade(pos.trade_id)
+    if existing and existing.get("exit_time"):
+        return existing
 
     exit_side = -pos.side
-    ltp = exit_price if exit_price is not None else (
-        fyers_service.get_ltp(pos.symbol_name) or pos.entry_price
+    ltp = exit_price if exit_price is not None else _resolve_exit_price(
+        pos.symbol_name, pos.side, pos.entry_price
     )
+    if ltp is None:
+        ltp = pos.entry_price
+
     exit_time = _now_market().strftime("%Y-%m-%d %H:%M:%S")
     is_paper = pos.entry_status != "FILLED"
     if is_paper:
@@ -433,6 +514,7 @@ def _exit_trade(reason: str, exit_price: float | None = None):
         )
         resp = order_result.get("response")
         exit_status = fyers_service.order_status_label(resp)
+
     pnl = repository.calc_trade_pnl(
         pos.side, pos.entry_price, ltp, pos.quantity
     )
@@ -470,6 +552,60 @@ def _exit_trade(reason: str, exit_price: float | None = None):
     )
     if trade:
         _print_trade_result(trade)
+    return trade
+
+
+def _exit_trade(reason: str, exit_price: float | None = None):
+    global _open_position
+
+    with _lock:
+        pos = _open_position
+        if not pos:
+            return
+        _open_position = None
+
+    _close_position_with_logs(pos, reason, exit_price)
+
+
+def close_trade_record(
+    trade: dict, reason: str, exit_price: float | None = None
+) -> dict | None:
+    """Close an open DB trade with full order log + PnL (engine thread not required)."""
+    if trade.get("exit_time"):
+        return None
+    result = _close_position_with_logs(
+        _position_from_trade(trade), reason, exit_price
+    )
+    if result:
+        global _open_position
+        with _lock:
+            if _open_position and _open_position.trade_id == result["id"]:
+                _open_position = None
+    return result
+
+
+def square_off_all_open_trades(exit_reason: str = "EOD") -> list[int]:
+    """Close every open trade today — SL/target/EOD/stop all use the same logging path."""
+    _sync_open_position_from_db()
+    closed_ids: list[int] = []
+    for _ in range(16):
+        with _lock:
+            has_mem = _open_position is not None
+        if has_mem:
+            with _lock:
+                trade_id = _open_position.trade_id if _open_position else None
+            _exit_trade(exit_reason)
+            if trade_id is not None:
+                closed_ids.append(trade_id)
+            continue
+
+        trade = repository.get_open_trade()
+        if not trade:
+            break
+        result = close_trade_record(trade, exit_reason)
+        if result:
+            closed_ids.append(result["id"])
+    return closed_ids
 
 
 def _monitor_open_position():
@@ -477,7 +613,8 @@ def _monitor_open_position():
         pos = _open_position
     if not pos:
         return
-    ltp = fyers_service.get_ltp(pos.symbol_name)
+
+    ltp = _resolve_exit_price(pos.symbol_name, pos.side, pos.entry_price)
     if ltp is None:
         return
 
@@ -528,6 +665,8 @@ def _scan_for_entry():
     ws_active = fyers_service.is_market_ws_active()
     refreshed = fyers_service.tick_depth_refresh(symbol_names)
 
+    candidates: list[dict] = []
+
     for sym in symbols:
         name = sym["symbol_name"]
         depth = fyers_service.get_market_depth(name)
@@ -569,25 +708,15 @@ def _scan_for_entry():
         sell_diff = ask_qty - bid_qty
         buy_diff = bid_qty - ask_qty
 
-        signal = _evaluate_signal(
-            bid_qty,
-            ask_qty,
-            volume_diff,
-        )
+        signal = _evaluate_signal(bid_qty, ask_qty, volume_diff)
+        vwap_ok = False
         vwap_note = ""
         if signal:
-            vwap_meta = fyers_service.get_vwap_with_meta(
-                sym["symbol_name"], sym["time_frame"]
-            )
-            if vwap_meta and vwap_meta.get("vwap") is not None:
-                ok, _, crossover = fyers_service.passes_vwap_crossover_filter(
-                    signal, vwap_meta, sym["time_frame"]
-                )
+            vwap_ok, crossover = _vwap_allows_entry(sym, signal)
+            if crossover:
                 vwap_note = (
-                    f" vwap={vwap_meta['vwap']:.2f} "
-                    f"prev_prev={crossover.get('prev_prev_close')} "
-                    f"prev={crossover.get('prev_close')} "
-                    f"crossover_ok={ok}"
+                    f" vwap cross prev_prev={crossover.get('prev_prev_close')} "
+                    f"prev={crossover.get('prev_close')} crossover_ok={vwap_ok}"
                 )
             else:
                 vwap_note = " vwap=NA"
@@ -603,20 +732,43 @@ def _scan_for_entry():
             ),
             flush=True,
         )
-        if not signal:
-            continue
 
-        if _has_open_position():
+        candidate = _entry_candidate(sym, depth)
+        if candidate:
+            candidates.append(candidate)
+
+    if not candidates:
+        return
+
+    if _has_open_position():
+        return
+
+    # Pick strongest volume imbalance among all symbols that pass VWAP.
+    best = max(candidates, key=lambda c: c["margin"])
+    sym = best["sym"]
+    signal = best["signal"]
+    depth = best["depth"]
+
+    fresh = fyers_service.fetch_market_depth_immediate(sym["symbol_name"])
+    if fresh and not fresh.get("error") and fyers_service.has_book_totals(fresh):
+        recheck = _entry_candidate(sym, fresh)
+        if recheck:
+            depth = fresh
+            signal = recheck["signal"]
+        else:
+            print(
+                f"[ENTRY] {sym['symbol_name']}: fresh depth no longer passes — skipped",
+                flush=True,
+            )
             return
 
-        _log_app(
-            f"Signal {signal} on {sym['symbol_name']}: "
-            f"book_buy={depth['bid_qty']} book_sell={depth['ask_qty']} "
-            f"need>={sym['volume_difference']}",
-            {"depth": depth},
-        )
-        _enter_trade(sym, signal, depth)
-        return
+    _log_app(
+        f"Signal {signal} on {sym['symbol_name']}: "
+        f"book_buy={depth['bid_qty']} book_sell={depth['ask_qty']} "
+        f"need>={sym['volume_difference']}",
+        {"depth": depth, "candidates": [c["sym"]["symbol_name"] for c in candidates]},
+    )
+    _enter_trade(sym, signal, depth)
 
 
 def _tick():
@@ -668,18 +820,7 @@ def _run_loop():
 
 def _square_off_all_open_positions(reason: str) -> None:
     """Exit every open position for today — broker-filled or paper (rejected entry)."""
-    _sync_open_position_from_db()
-    for _ in range(8):
-        with _lock:
-            has_mem = _open_position is not None
-        if has_mem:
-            _exit_trade(reason)
-            continue
-        trade = repository.get_open_trade()
-        if not trade:
-            break
-        _restore_open_position_from_trade(trade)
-        _exit_trade(reason)
+    square_off_all_open_trades(reason)
 
 
 def start() -> tuple[bool, str]:
@@ -714,7 +855,7 @@ def start() -> tuple[bool, str]:
     return True, ""
 
 
-def stop(square_off: bool = True, exit_reason: str = "STOP") -> tuple[bool, str]:
+def stop(square_off: bool = True, exit_reason: str = "SESSION") -> tuple[bool, str]:
     _stop_event.set()
     repository.set_strategy_running(False)
 

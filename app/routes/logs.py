@@ -25,9 +25,11 @@ def list_order_logs():
         date_to=date_to,
         today_only=today_only,
     )
+    events = repository.trades_to_log_events(trades)
     return jsonify(
         {
             "trades": trades,
+            "events": events,
             "summary": summary,
             "today_ist": market_tz.today_key_ist(),
         }

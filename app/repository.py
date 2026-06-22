@@ -172,6 +172,58 @@ def list_trades(
     return [trade_row_to_dict(r) for r in rows]
 
 
+def trades_to_log_events(trades: list[dict]) -> list[dict]:
+    """One row per entry and one row per exit (chronological, newest first)."""
+    events: list[dict] = []
+
+    for trade in trades:
+        trade_id = trade["id"]
+        entry_side = trade["side"]
+        exit_side = "SELL" if entry_side == "BUY" else "BUY"
+
+        events.append(
+            {
+                "id": f"{trade_id}-entry",
+                "trade_id": trade_id,
+                "event_type": "ENTRY",
+                "time": trade["entry_time"],
+                "symbol_name": trade["symbol_name"],
+                "side": entry_side,
+                "quantity": trade["quantity"],
+                "price": trade["entry_price"],
+                "status": trade["entry_status"],
+                "exit_reason": None,
+                "stop_loss": trade["stop_loss"],
+                "target": trade["target"],
+                "pnl": None,
+                "is_open": trade["is_open"],
+            }
+        )
+
+        if trade.get("exit_time"):
+            events.append(
+                {
+                    "id": f"{trade_id}-exit",
+                    "trade_id": trade_id,
+                    "event_type": "EXIT",
+                    "time": trade["exit_time"],
+                    "symbol_name": trade["symbol_name"],
+                    "side": exit_side,
+                    "quantity": trade["quantity"],
+                    "price": trade["exit_price"],
+                    "status": trade["exit_status"],
+                    "exit_reason": trade["exit_reason"],
+                    "stop_loss": trade["stop_loss"],
+                    "target": trade["target"],
+                    "pnl": trade["pnl"],
+                    "is_open": False,
+                }
+            )
+
+    events.sort(key=lambda row: row["time"] or "", reverse=True)
+    return events
+
+
 def get_trades_summary(
     symbol: str | None = None,
     date_from: str | None = None,
@@ -226,7 +278,7 @@ def create_trade(
     target: float | None,
     entry_time: str | None = None,
     details: dict | None = None,
-) -> dict:
+) -> dict | None:
     if entry_time is None:
         with get_connection() as conn:
             entry_time = conn.execute(
@@ -236,6 +288,18 @@ def create_trade(
     details_json = json.dumps(details) if details else None
 
     with get_connection() as conn:
+        open_row = conn.execute(
+            """
+            SELECT id FROM trades
+            WHERE exit_time IS NULL
+              AND date(entry_time) = date(?)
+            LIMIT 1
+            """,
+            (market_tz.today_key_ist(),),
+        ).fetchone()
+        if open_row:
+            return None
+
         cur = conn.execute(
             """
             INSERT INTO trades
@@ -671,31 +735,10 @@ def finalize_stale_open_trades() -> list[int]:
 
 
 def square_off_todays_open_trades(exit_reason: str = "EOD") -> list[int]:
-    """Time-based exit for all still-open trades today (at configured stop time)."""
-    from app import fyers_service
+    """Time-based exit for all still-open trades today (full order log + PnL)."""
+    from app import strategy_engine
 
-    closed_ids: list[int] = []
-    for trade in list_open_trades_today():
-        ltp = (
-            fyers_service.get_ltp(trade["symbol_name"])
-            or trade["entry_price"]
-        )
-        side = 1 if trade["side"] == "BUY" else -1
-        pnl = calc_trade_pnl(
-            side, trade["entry_price"], ltp, trade["quantity"]
-        )
-        closed = close_trade(
-            trade_id=trade["id"],
-            exit_price=ltp,
-            exit_reason=exit_reason,
-            exit_status=(
-                "PAPER" if trade["entry_status"] != "FILLED" else "SKIPPED"
-            ),
-            pnl=pnl,
-        )
-        if closed:
-            closed_ids.append(trade["id"])
-    return closed_ids
+    return strategy_engine.square_off_all_open_trades(exit_reason)
 
 
 def can_take_more_trades() -> bool:

@@ -74,16 +74,43 @@
     return `<span class="book-signal ${cls}">${escapeHtml(signal)}</span>`;
   }
 
+  function vwapBadge(row) {
+    if (!row.signal) return '<span class="book-signal book-signal--none">—</span>';
+    if (row.trade_ready) {
+      const cls = row.vwap_signal === "BUY" ? "book-signal--buy" : "book-signal--sell";
+      return `<span class="book-signal ${cls} book-signal--ready" title="Strategy will enter this trade">READY ${escapeHtml(row.vwap_signal)}</span>`;
+    }
+    if (row.vwap_signal) {
+      const cls = row.vwap_signal === "BUY" ? "book-signal--buy" : "book-signal--sell";
+      return `<span class="book-signal ${cls}" title="Signal + VWAP match — waiting for strategy">${escapeHtml(row.vwap_signal)}</span>`;
+    }
+    return `<span class="book-signal book-signal--none" title="${escapeHtml(row.vwap_reason || "VWAP not in confluence")}">BLOCKED</span>`;
+  }
+
   function renderBanner(data) {
     if (!bannerEl) return;
+
+    const messages = [];
     if (data.market_open === false && data.market_message) {
-      bannerEl.hidden = false;
-      bannerEl.textContent = data.market_message;
+      messages.push(data.market_message);
       bannerEl.classList.add("market-book__banner--closed");
+    } else {
+      bannerEl.classList.remove("market-book__banner--closed");
+    }
+
+    if (data.trade_block_reason) {
+      messages.push(data.trade_block_reason);
+      bannerEl.classList.add("market-book__banner--warn");
+    } else {
+      bannerEl.classList.remove("market-book__banner--warn");
+    }
+
+    if (messages.length) {
+      bannerEl.hidden = false;
+      bannerEl.textContent = messages.join(" · ");
     } else {
       bannerEl.hidden = true;
       bannerEl.textContent = "";
-      bannerEl.classList.remove("market-book__banner--closed");
     }
 
     if (hoursEl && data.start_time && data.stop_time) {
@@ -118,7 +145,7 @@
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td><strong>${escapeHtml(row.symbol_name)}</strong></td>
-          <td colspan="7" class="market-book__status">${escapeHtml(
+          <td colspan="8" class="market-book__status">${escapeHtml(
             statusLabel(row, marketMessage)
           )}</td>
         `;
@@ -134,7 +161,7 @@
       if (row.status !== "live") {
         tr.innerHTML = `
           <td><strong>${escapeHtml(row.symbol_name)}</strong></td>
-          <td colspan="7" class="market-book__status">${escapeHtml(
+          <td colspan="8" class="market-book__status">${escapeHtml(
             statusLabel(row, marketMessage)
           )}</td>
         `;
@@ -151,6 +178,7 @@
         <td>${formatPrice(row.ask_price)}</td>
         <td>${formatPrice(row.ltp)}</td>
         <td>${signalBadge(row.signal)}</td>
+        <td>${vwapBadge(row)}</td>
       `;
       tbody.appendChild(tr);
     });
