@@ -12,8 +12,13 @@ const els = {
   stopTime: document.getElementById("strategy-stop-time"),
   maxTrades: document.getElementById("strategy-max-trades"),
   timezone: document.getElementById("strategy-timezone"),
+  vwapEnabled: document.getElementById("strategy-vwap-enabled"),
   hint: document.getElementById("strategy-hint"),
 };
+
+const hasFullStrategyBar = Boolean(
+  els.startTime && els.btnStart && els.btnLogin
+);
 
 let state = {
   api_connected: false,
@@ -24,6 +29,7 @@ let state = {
   timezone: "Asia/Kolkata",
   trades_taken_today: 0,
   available_balance: null,
+  vwap_enabled: true,
 };
 
 let pollTimer = null;
@@ -48,6 +54,8 @@ function fromInputTime(value) {
 }
 
 function renderState() {
+  if (!els.apiStatus || !els.strategyStatus) return;
+
   const apiOn = state.api_connected;
   const running = state.is_running;
 
@@ -60,27 +68,34 @@ function renderState() {
   els.strategyStatus.querySelector(".status-pill__text").textContent = running
     ? "Running"
     : "Stopped";
-  const balText =
-    typeof state.available_balance === "number"
-      ? `Balance: ₹${state.available_balance.toLocaleString(undefined, {
-          maximumFractionDigits: 2,
-        })}`
-      : "Balance: --";
-  els.balanceStatus.querySelector(".status-pill__text").textContent = balText;
 
-  els.btnLogin.textContent = apiOn ? "Logout" : "Login";
-  els.btnLogin.classList.toggle("btn--outline", !apiOn);
-  els.btnLogin.classList.toggle("btn--ghost", apiOn);
+  if (els.balanceStatus) {
+    const balText =
+      typeof state.available_balance === "number"
+        ? `Balance: ₹${state.available_balance.toLocaleString(undefined, {
+            maximumFractionDigits: 2,
+          })}`
+        : "Balance: --";
+    els.balanceStatus.querySelector(".status-pill__text").textContent = balText;
+  }
 
-  // Start can auto-login on click, so keep it enabled whenever strategy is not running.
-  els.btnStart.disabled = running;
-  els.btnStop.disabled = !running;
+  if (els.btnLogin) {
+    els.btnLogin.textContent = apiOn ? "Logout" : "Login";
+    els.btnLogin.classList.toggle("btn--outline", !apiOn);
+    els.btnLogin.classList.toggle("btn--ghost", apiOn);
+  }
 
-  els.startTime.disabled = running;
-  els.stopTime.disabled = running;
-  els.maxTrades.disabled = running;
+  if (els.btnStart) els.btnStart.disabled = running;
+  if (els.btnStop) els.btnStop.disabled = !running;
+
+  if (els.startTime) els.startTime.disabled = running;
+  if (els.stopTime) els.stopTime.disabled = running;
+  if (els.maxTrades) els.maxTrades.disabled = running;
   if (els.timezone) els.timezone.disabled = running;
-  els.btnSaveSettings.disabled = running;
+  if (els.vwapEnabled) els.vwapEnabled.disabled = running;
+  if (els.btnSaveSettings) els.btnSaveSettings.disabled = running;
+
+  if (!els.hint) return;
 
   const max = state.max_trades ?? 2;
   const taken = state.trades_taken_today ?? 0;
@@ -88,21 +103,22 @@ function renderState() {
 
   const tz =
     els.timezone?.value || state.timezone || "Asia/Kolkata";
-  if (running) {
+  if (running && hasFullStrategyBar) {
     els.hint.textContent = `Running · ${state.start_time}–${state.stop_time} (${tz}) · ${taken}/${max} trades today (${tradesLeft} left).`;
-  } else if (!apiOn) {
+  } else if (!apiOn && hasFullStrategyBar) {
     els.hint.textContent = `Stop → edit start/stop/timezone → Save → Start. Window uses ${tz}.`;
-  } else {
+  } else if (hasFullStrategyBar) {
     els.hint.textContent = `${state.start_time}–${state.stop_time} (${tz}) · max ${max}/day · ${taken} used, ${tradesLeft} left.`;
   }
 }
 
 function schedulePayload() {
   return {
-    start_time: fromInputTime(els.startTime.value),
-    stop_time: fromInputTime(els.stopTime.value),
-    max_trades: parseInt(els.maxTrades.value, 10),
-    timezone: els.timezone?.value || "Asia/Kolkata",
+    start_time: fromInputTime(els.startTime?.value || state.start_time),
+    stop_time: fromInputTime(els.stopTime?.value || state.stop_time),
+    max_trades: parseInt(els.maxTrades?.value || state.max_trades, 10),
+    timezone: els.timezone?.value || state.timezone || "Asia/Kolkata",
+    vwap_enabled: els.vwapEnabled ? els.vwapEnabled.checked : state.vwap_enabled !== false,
   };
 }
 
@@ -138,14 +154,17 @@ async function apiRequest(url, options = {}) {
 async function loadStrategy() {
   try {
     state = await apiRequest(STRATEGY_API);
-    els.startTime.value = toInputTime(state.start_time);
-    els.stopTime.value = toInputTime(state.stop_time);
-    els.maxTrades.value = state.max_trades ?? 2;
+    if (els.startTime) els.startTime.value = toInputTime(state.start_time);
+    if (els.stopTime) els.stopTime.value = toInputTime(state.stop_time);
+    if (els.maxTrades) els.maxTrades.value = state.max_trades ?? 2;
     if (els.timezone) {
       const tz = state.timezone || "Asia/Kolkata";
       const hasOption = [...els.timezone.options].some((o) => o.value === tz);
       els.timezone.value = hasOption ? tz : "Asia/Kolkata";
       state.timezone = els.timezone.value;
+    }
+    if (els.vwapEnabled) {
+      els.vwapEnabled.checked = state.vwap_enabled !== false;
     }
     renderState();
     updatePolling();
@@ -155,14 +174,15 @@ async function loadStrategy() {
 }
 
 async function saveSettings() {
-  const maxTrades = parseInt(els.maxTrades.value, 10);
-  if (!Number.isFinite(maxTrades) || maxTrades < 1) {
-    showAppToast("Max trades must be at least 1.");
-    return;
-  }
-
   const payload = schedulePayload();
-  payload.max_trades = maxTrades;
+  if (els.maxTrades) {
+    const maxTrades = parseInt(els.maxTrades.value, 10);
+    if (!Number.isFinite(maxTrades) || maxTrades < 1) {
+      showAppToast("Max trades must be at least 1.");
+      return;
+    }
+    payload.max_trades = maxTrades;
+  }
   try {
     state = await apiRequest(`${STRATEGY_API}/times`, {
       method: "PUT",
@@ -171,7 +191,9 @@ async function saveSettings() {
     renderState();
     updatePolling();
     showAppToast(
-      `Settings saved: ${state.start_time}–${state.stop_time} (${state.timezone}), max ${state.max_trades}/day`
+      hasFullStrategyBar
+        ? `Settings saved: ${state.start_time}–${state.stop_time} (${state.timezone}), max ${state.max_trades}/day`
+        : `VWAP filter ${state.vwap_enabled ? "enabled" : "disabled"}.`
     );
     if (window.AppLogger) {
       AppLogger.log(
@@ -184,7 +206,9 @@ async function saveSettings() {
   }
 }
 
-els.btnSaveSettings.addEventListener("click", saveSettings);
+if (els.btnSaveSettings) {
+  els.btnSaveSettings.addEventListener("click", saveSettings);
+}
 
 if (els.timezone) {
   els.timezone.addEventListener("change", () => {
@@ -193,7 +217,8 @@ if (els.timezone) {
   });
 }
 
-els.btnLogin.addEventListener("click", async () => {
+if (els.btnLogin) {
+  els.btnLogin.addEventListener("click", async () => {
   try {
     if (state.api_connected) {
       const body = await apiRequest(`${STRATEGY_API}/logout`, { method: "POST" });
@@ -209,9 +234,11 @@ els.btnLogin.addEventListener("click", async () => {
   } catch (err) {
     showAppToast(err.message);
   }
-});
+  });
+}
 
-els.btnStart.addEventListener("click", async () => {
+if (els.btnStart) {
+  els.btnStart.addEventListener("click", async () => {
   const maxTrades = parseInt(els.maxTrades.value, 10);
   if (!Number.isFinite(maxTrades) || maxTrades < 1) {
     showAppToast("Max trades must be at least 1.");
@@ -239,9 +266,11 @@ els.btnStart.addEventListener("click", async () => {
   } catch (err) {
     showAppToast(err.message);
   }
-});
+  });
+}
 
-els.btnStop.addEventListener("click", async () => {
+if (els.btnStop) {
+  els.btnStop.addEventListener("click", async () => {
   try {
     const body = await apiRequest(`${STRATEGY_API}/stop`, { method: "POST" });
     state = {
@@ -258,6 +287,9 @@ els.btnStop.addEventListener("click", async () => {
   } catch (err) {
     showAppToast(err.message);
   }
-});
+  });
+}
 
-loadStrategy();
+if (els.apiStatus) {
+  loadStrategy();
+}

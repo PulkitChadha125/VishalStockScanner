@@ -6,8 +6,10 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 DATABASE_PATH = DATA_DIR / "symbols.db"
+SCANNER_CSV_PATH = BASE_DIR / "scanner.csv"
 
 
 class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-in-production")
     DATABASE_PATH = DATABASE_PATH
+    SCANNER_CSV_PATH = SCANNER_CSV_PATH

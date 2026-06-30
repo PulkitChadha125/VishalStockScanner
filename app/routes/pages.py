@@ -11,6 +11,14 @@ def symbol_settings():
     )
 
 
+@pages_bp.route("/scanner")
+def scanner_settings():
+    return render_template(
+        "scanner_settings.html",
+        active_page="scanner",
+    )
+
+
 @pages_bp.route("/order-logs")
 def order_logs():
     return render_template(

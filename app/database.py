@@ -69,6 +69,14 @@ def init_db(database_path: Path) -> None:
                 api_connected INTEGER NOT NULL DEFAULT 0
             );
 
+            CREATE TABLE IF NOT EXISTS scanner_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol_name TEXT NOT NULL,
+                time_frame TEXT NOT NULL,
+                prev_close REAL,
+                prev_close_fetched_at TEXT
+            );
+
             INSERT OR IGNORE INTO strategy_settings (id, start_time, stop_time, timezone)
             VALUES (1, '09:30', '15:00', 'Asia/Kolkata');
             """
@@ -87,6 +95,15 @@ def init_db(database_path: Path) -> None:
             pass
         try:
             conn.execute(
+                "ALTER TABLE strategy_settings ADD COLUMN vwap_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        except sqlite3.OperationalError:
+            pass
+        conn.execute(
+            "UPDATE strategy_settings SET vwap_enabled = 1 WHERE id = 1 AND vwap_enabled IS NULL"
+        )
+        try:
+            conn.execute(
                 "ALTER TABLE symbol_settings ADD COLUMN volume_difference REAL NOT NULL DEFAULT 0"
             )
         except sqlite3.OperationalError:
@@ -96,6 +113,15 @@ def init_db(database_path: Path) -> None:
         )
         conn.execute(
             "UPDATE symbol_settings SET volume_difference = 0 WHERE volume_difference IS NULL"
+        )
+        try:
+            conn.execute(
+                "ALTER TABLE symbol_settings ADD COLUMN tsl REAL NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass
+        conn.execute(
+            "UPDATE symbol_settings SET tsl = 0 WHERE tsl IS NULL"
         )
         conn.execute(
             """
@@ -145,7 +171,19 @@ def get_connection():
         conn.close()
 
 
+def scanner_row_to_dict(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "symbol_name": row["symbol_name"],
+        "time_frame": row["time_frame"],
+        "prev_close": row["prev_close"],
+        "prev_close_fetched_at": row["prev_close_fetched_at"],
+    }
+
+
 def symbol_row_to_dict(row: sqlite3.Row) -> dict:
+    keys = row.keys()
+    tsl = row["tsl"] if "tsl" in keys else 0
     return {
         "id": row["id"],
         "symbol_name": row["symbol_name"],
@@ -153,6 +191,7 @@ def symbol_row_to_dict(row: sqlite3.Row) -> dict:
         "volume_difference": row["volume_difference"],
         "stop_loss_pct": row["stop_loss_pct"],
         "target_pct": row["target_pct"],
+        "tsl": tsl,
     }
 
 
@@ -207,6 +246,8 @@ def trade_row_to_dict(row: sqlite3.Row) -> dict:
         "vwap_crossover": details.get("vwap_crossover"),
         "stop_loss_pct": details.get("stop_loss_pct"),
         "target_pct": details.get("target_pct"),
+        "tsl": details.get("tsl"),
+        "initial_stop_loss": details.get("initial_stop_loss"),
         "volume_difference": details.get("volume_difference"),
         "book_buy_qty": details.get("book_buy_qty"),
         "book_sell_qty": details.get("book_sell_qty"),

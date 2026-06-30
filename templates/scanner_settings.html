@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block title %}Scanner{% endblock %}
+
+{% block content %}
+<header class="header">
+  <div class="header__brand">
+    <span class="header__logo"></span>
+    <h1>Scanner</h1>
+  </div>
+  <p class="header__subtitle">Live macro bias — whichever side has more stocks vs prev close allows that trade direction</p>
+</header>
+
+<section class="strategy-bar" id="strategy-bar">
+  <div class="strategy-bar__main">
+    <div class="strategy-bar__status">
+      <span class="status-pill status-pill--sm" id="api-status" data-state="disconnected">
+        <span class="status-pill__dot"></span>
+        <span class="status-pill__text">API off</span>
+      </span>
+      <span class="status-pill status-pill--sm" id="strategy-status" data-state="stopped">
+        <span class="status-pill__dot"></span>
+        <span class="status-pill__text">Stopped</span>
+      </span>
+    </div>
+
+    <div class="strategy-bar__fields">
+      <label class="cp-field cp-field--switch" for="strategy-vwap-enabled">
+        <span class="cp-field__label">VWAP filter</span>
+        <input type="checkbox" id="strategy-vwap-enabled" checked title="When off, VWAP is skipped for watchlist entries">
+      </label>
+      <button type="button" id="btn-save-settings" class="btn btn--ghost btn--xs" data-log-label="Click: Save VWAP setting">Save</button>
+    </div>
+
+    <div class="strategy-bar__actions">
+      <button type="button" id="btn-refresh-prev-close" class="btn btn--outline btn--xs" data-log-label="Click: Refresh prev close">Refresh prev close</button>
+    </div>
+  </div>
+  <p class="strategy-bar__hint" id="strategy-hint">Prev close is fetched at 9:00 login and before strategy start.</p>
+</section>
+
+<main class="main">
+  <section class="scanner-summary" id="scanner-summary" aria-live="polite">
+    <div class="scanner-summary__card">
+      <span class="scanner-summary__label">Symbols</span>
+      <span class="scanner-summary__value" id="summary-total">0</span>
+    </div>
+    <div class="scanner-summary__card scanner-summary__card--buy">
+      <span class="scanner-summary__label">Above prev close</span>
+      <span class="scanner-summary__value" id="summary-buy">0</span>
+    </div>
+    <div class="scanner-summary__card scanner-summary__card--sell">
+      <span class="scanner-summary__label">Below prev close</span>
+      <span class="scanner-summary__value" id="summary-sell">0</span>
+    </div>
+    <div class="scanner-summary__card">
+      <span class="scanner-summary__label">Live trade side</span>
+      <span class="scanner-summary__value" id="summary-allowed">—</span>
+    </div>
+    <div class="scanner-summary__card">
+      <span class="scanner-summary__label">Flat / missing</span>
+      <span class="scanner-summary__value" id="summary-other">0</span>
+    </div>
+  </section>
+
+  <section class="toolbar toolbar--symbols">
+    <button type="button" id="btn-add" class="btn btn--primary" data-log-label="Click: Add Scanner Symbol">+ Add Symbol</button>
+    <button type="button" id="btn-download-csv" class="btn btn--outline" data-log-label="Click: Download Scanner CSV">Download CSV</button>
+    <button type="button" id="btn-load-csv" class="btn btn--outline" data-log-label="Click: Load Scanner CSV">Load CSV</button>
+    <input type="file" id="csv-file-input" accept=".csv,text/csv" hidden>
+    <span class="toolbar__meta" id="scanner-updated">Updated: —</span>
+  </section>
+
+  <section class="table-wrap">
+    <table class="data-table" id="scanner-table">
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Timeframe</th>
+          <th>Prev close</th>
+          <th>LTP</th>
+          <th>vs Prev</th>
+          <th>Prev close at</th>
+          <th>LTP at</th>
+          <th class="col-actions">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="scanner-tbody">
+        <tr class="empty-row" id="empty-row">
+          <td colspan="8">No scanner symbols yet. Click &quot;Add Symbol&quot; or load scanner.csv.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<div class="modal" id="scanner-modal" aria-hidden="true">
+  <div class="modal__backdrop" data-close-modal></div>
+  <div class="modal__dialog" role="dialog" aria-labelledby="modal-title">
+    <header class="modal__header">
+      <h2 id="modal-title">Edit Scanner Symbol</h2>
+      <button type="button" class="modal__close" data-close-modal aria-label="Close">&times;</button>
+    </header>
+    <form id="scanner-form" class="modal__body">
+      <input type="hidden" id="scanner-id" name="id">
+      <div class="field">
+        <label for="scanner-name">Symbol Name</label>
+        <input type="text" id="scanner-name" name="symbol_name" required placeholder="e.g. SUNPHARMA">
+      </div>
+      <div class="field">
+        <label for="scanner-timeframe">Timeframe</label>
+        <select id="scanner-timeframe" name="time_frame" required>
+          <option value="">Select timeframe</option>
+          <option value="1d">1 day</option>
+          <option value="1h">1 hour</option>
+          <option value="30m">30 minutes</option>
+          <option value="15m">15 minutes</option>
+          <option value="5m">5 minutes</option>
+          <option value="1m">1 minute</option>
+        </select>
+      </div>
+      <p class="form-error" id="form-error" hidden></p>
+      <footer class="modal__footer">
+        <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
+        <button type="submit" class="btn btn--primary" id="btn-ok">OK</button>
+      </footer>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/strategy.js') }}"></script>
+<script src="{{ url_for('static', filename='js/scanner.js') }}"></script>
+{% endblock %}

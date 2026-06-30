@@ -69,8 +69,18 @@ def update_times():
     if max_trades < 1:
         return jsonify({"error": "Max trades must be at least 1."}), 400
 
+    try:
+        vwap_enabled = data.get("vwap_enabled", True)
+        if isinstance(vwap_enabled, str):
+            vwap_enabled = vwap_enabled.lower() in ("1", "true", "yes", "on")
+        else:
+            vwap_enabled = bool(vwap_enabled)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid VWAP setting."}), 400
+
     settings = repository.update_strategy_config(
-        start_time, stop_time, max_trades, timezone
+        start_time, stop_time, max_trades, timezone,
+        vwap_enabled=vwap_enabled,
     )
     trades_today = repository.count_trades_today()
     _log(
@@ -146,6 +156,7 @@ def start_strategy():
             stop_time,
             max_trades,
             timezone or settings.get("timezone", market_tz.DEFAULT_TIMEZONE),
+            vwap_enabled=settings.get("vwap_enabled", True),
         )
 
     # Clear stale DB "running" flag if engine thread is not alive
@@ -165,6 +176,11 @@ def start_strategy():
         return jsonify({"error": err or "Fyers auto-login failed"}), 400
     repository.set_api_connected(True)
     _log("Re-login on Start successful", {"available_balance": balance})
+    if repository.list_scanner_symbols():
+        from app import scanner_service
+
+        scanner_service.prepare_prev_closes()
+        fyers_service.sync_market_websocket()
 
     settings = repository.get_strategy_settings()
     start_time = start_time or settings["start_time"]

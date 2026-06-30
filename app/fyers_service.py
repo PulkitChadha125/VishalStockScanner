@@ -47,6 +47,14 @@ _rate_limited_until = 0.0
 _book_refresh_stop = threading.Event()
 _book_refresh_thread: threading.Thread | None = None
 
+LTP_WS_MAX_AGE_SEC = 15.0
+LTP_QUOTES_MIN_INTERVAL_SEC = 2.0
+LTP_QUOTES_MAX_AGE_SEC = 30.0
+
+_ltp_quotes_cache: dict[str, tuple[float, float]] = {}
+_last_ltp_quotes_at = 0.0
+_ltp_quotes_lock = threading.Lock()
+
 
 def is_connected() -> bool:
     return _connected and fyi.fyers is not None
@@ -118,10 +126,24 @@ def reset_session_state() -> None:
     logout()
 
 
+def _all_market_symbol_names() -> list[str]:
+    """Watchlist + scanner symbols for websocket LTP/depth."""
+    watch = [s["symbol_name"] for s in repository.list_symbols()]
+    scan = [s["symbol_name"] for s in repository.list_scanner_symbols()]
+    seen: set[str] = set()
+    merged: list[str] = []
+    for name in watch + scan:
+        key = name.upper()
+        if key not in seen:
+            seen.add(key)
+            merged.append(name)
+    return merged
+
+
 def _start_market_websocket() -> None:
     if not is_connected():
         return
-    names = [s["symbol_name"] for s in repository.list_symbols()]
+    names = _all_market_symbol_names()
     if names:
         fyers_market_ws.start(names)
 
@@ -133,7 +155,7 @@ def _stop_market_websocket() -> None:
 def sync_market_websocket() -> None:
     if not is_connected():
         return
-    names = [s["symbol_name"] for s in repository.list_symbols()]
+    names = _all_market_symbol_names()
     if names:
         fyers_market_ws.sync_symbols(names)
     else:
@@ -165,8 +187,9 @@ def _book_refresh_loop() -> None:
     while not _book_refresh_stop.is_set():
         try:
             if is_connected() and market_tz.session_status().get("market_open"):
-                names = [s["symbol_name"] for s in repository.list_symbols()]
+                names = _all_market_symbol_names()
                 if names:
+                    refresh_ltps_via_quotes(names)
                     tick_book_totals_refresh(names)
         except Exception as e:
             print(f"[Book REST] refresh error: {e}", flush=True)
@@ -480,18 +503,130 @@ def clear_depth_cache() -> None:
     _rate_limited_until = 0.0
 
 
+def _short_symbol_name(symbol_name: str) -> str:
+    sym = (symbol_name or "").strip().upper()
+    if ":" in sym:
+        sym = sym.split(":", 1)[1]
+    return sym.replace("-EQ", "").replace("-eq", "")
+
+
+def refresh_ltps_via_quotes(
+    symbol_names: list[str], *, force: bool = False
+) -> dict[str, float]:
+    """
+    Batch-fetch live LTP (lp) from Fyers quotes API.
+    Updates REST cache and WebSocket LTP cache.
+    """
+    global _last_ltp_quotes_at
+
+    if not is_connected() or not symbol_names:
+        return {}
+
+    names = sorted(
+        {(n or "").strip().upper() for n in symbol_names if (n or "").strip()}
+    )
+    if not names:
+        return {}
+
+    now = time.time()
+    with _ltp_quotes_lock:
+        if (
+            not force
+            and now - _last_ltp_quotes_at < LTP_QUOTES_MIN_INTERVAL_SEC
+        ):
+            return {
+                n: _ltp_quotes_cache[n][0]
+                for n in names
+                if n in _ltp_quotes_cache
+            }
+
+    symbols_str = ",".join(to_fyers_symbol(n) for n in names)
+    try:
+        res = fyi.fyers.quotes(data={"symbols": symbols_str})
+    except Exception as exc:
+        print(f"[LTP quotes] batch error: {exc}", flush=True)
+        return {}
+
+    if not isinstance(res, dict) or res.get("s") != "ok":
+        print(f"[LTP quotes] rejected: {res}", flush=True)
+        return {}
+
+    out: dict[str, float] = {}
+    fetched_at = time.time()
+    for item in res.get("d") or []:
+        if not isinstance(item, dict):
+            continue
+        raw_sym = item.get("n") or item.get("symbol") or ""
+        key = _short_symbol_name(str(raw_sym))
+        values = item.get("v") or {}
+        lp = values.get("lp")
+        if lp is None:
+            continue
+        try:
+            ltp = float(lp)
+        except (TypeError, ValueError):
+            continue
+        if ltp <= 0:
+            continue
+        out[key] = ltp
+        fyers_market_ws.set_ltp(key, ltp)
+
+    with _ltp_quotes_lock:
+        for key, ltp in out.items():
+            _ltp_quotes_cache[key] = (ltp, fetched_at)
+        if out:
+            _last_ltp_quotes_at = fetched_at
+
+    return out
+
+
+def get_ltp_updated_at(symbol_name: str) -> str | None:
+    """IST timestamp when LTP was last refreshed (WS or REST quotes)."""
+    key = (symbol_name or "").strip().upper()
+    ws_ltp, ws_age = fyers_market_ws.get_ltp_with_age(key)
+    if ws_ltp is not None and ws_age is not None and ws_age <= LTP_QUOTES_MAX_AGE_SEC:
+        ts = market_tz.now_ist() - timedelta(seconds=ws_age)
+        return ts.strftime("%Y-%m-%d %H:%M:%S")
+
+    with _ltp_quotes_lock:
+        cached = _ltp_quotes_cache.get(key)
+    if cached and time.time() - cached[1] <= LTP_QUOTES_MAX_AGE_SEC:
+        ts = datetime.fromtimestamp(
+            cached[1], tz=market_tz.get_market_timezone()
+        )
+        return ts.strftime("%Y-%m-%d %H:%M:%S")
+    return None
+
+
 def get_ltp(symbol_name: str) -> float | None:
     if not is_connected():
         return None
 
-    ws_ltp = fyers_market_ws.get_ltp(symbol_name)
-    if ws_ltp is not None:
+    key = (symbol_name or "").strip().upper()
+    ws_ltp, ws_age = fyers_market_ws.get_ltp_with_age(key)
+    if (
+        ws_ltp is not None
+        and ws_age is not None
+        and ws_age <= LTP_WS_MAX_AGE_SEC
+    ):
         return ws_ltp
 
-    sym = to_fyers_symbol(symbol_name)
+    with _ltp_quotes_lock:
+        cached = _ltp_quotes_cache.get(key)
+        if cached and time.time() - cached[1] <= LTP_QUOTES_MAX_AGE_SEC:
+            return cached[0]
+
+    sym = to_fyers_symbol(key)
     try:
         lp = fyi.get_ltp(sym)
-        return float(lp) if lp is not None else None
+        if lp is None:
+            return None
+        ltp = float(lp)
+        if ltp > 0:
+            fyers_market_ws.set_ltp(key, ltp)
+            with _ltp_quotes_lock:
+                _ltp_quotes_cache[key] = (ltp, time.time())
+        return ltp if ltp > 0 else None
     except Exception:
         return None
 
@@ -689,6 +824,69 @@ def fetch_history_for_vwap(
         "time_frame": tf,
         "candle_count": len(candles),
     }
+
+
+def fetch_previous_day_close(symbol_name: str, time_frame: str) -> float | None:
+    """
+    Previous completed session close for the symbol's timeframe.
+    For 1d: yesterday's daily close. For intraday: last candle before today.
+    """
+    if not is_connected() or fyi.fyers is None:
+        return None
+
+    tf = (time_frame or "").strip().lower()
+    resolution = timeframe_to_resolution(tf)
+    if not resolution:
+        print(f"[Scanner] Unsupported timeframe: {time_frame}", flush=True)
+        return None
+
+    today = market_tz.now().date()
+    days_back = 45 if tf == "1d" else 17
+    sym = to_fyers_symbol(symbol_name)
+    request = {
+        "symbol": sym,
+        "resolution": str(resolution),
+        "date_format": "1",
+        "range_from": str(today - timedelta(days=days_back)),
+        "range_to": str(today + timedelta(days=1)),
+        "cont_flag": "1",
+    }
+
+    try:
+        response = fyi.fyers.history(data=request)
+    except Exception as exc:
+        print(
+            f"[Scanner] History API error for {symbol_name}: {exc}",
+            flush=True,
+        )
+        return None
+
+    if not isinstance(response, dict) or response.get("s") != "ok":
+        print(
+            f"[Scanner] History rejected for {symbol_name} ({tf}): {response}",
+            flush=True,
+        )
+        return None
+
+    candles = response.get("candles") or []
+    if not candles:
+        return None
+
+    df = pd.DataFrame(
+        candles, columns=["date", "open", "high", "low", "close", "volume"]
+    )
+    df["date"] = pd.to_datetime(df["date"], unit="s", utc=True).dt.tz_convert(
+        market_tz.get_market_timezone()
+    )
+    df["day"] = df["date"].apply(
+        lambda x: x.date()
+        if hasattr(x, "date")
+        else pd.Timestamp(x, tz=market_tz.get_market_timezone()).date()
+    )
+    prior = df[df["day"] < today]
+    if prior.empty:
+        return None
+    return float(prior.iloc[-1]["close"])
 
 
 def get_vwap_with_meta(symbol_name: str, time_frame: str) -> dict | None:

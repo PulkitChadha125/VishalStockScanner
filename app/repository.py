@@ -5,6 +5,7 @@ from app.database import (
     app_log_row_to_dict,
     get_connection,
     order_row_to_dict,
+    scanner_row_to_dict,
     symbol_row_to_dict,
     trade_row_to_dict,
 )
@@ -42,15 +43,16 @@ def create_symbol(
     volume_difference: float,
     stop_loss_pct: float,
     target_pct: float,
+    tsl: float = 0,
 ) -> dict:
     with get_connection() as conn:
         cur = conn.execute(
             """
             INSERT INTO symbol_settings
-                (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct)
-            VALUES (?, ?, ?, ?, ?)
+                (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, tsl)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct),
+            (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, tsl),
         )
         conn.commit()
         symbol_id = cur.lastrowid
@@ -64,12 +66,14 @@ def update_symbol(
     volume_difference: float,
     stop_loss_pct: float,
     target_pct: float,
+    tsl: float = 0,
 ) -> dict | None:
     with get_connection() as conn:
         cur = conn.execute(
             """
             UPDATE symbol_settings
-            SET symbol_name = ?, time_frame = ?, volume_difference = ?, stop_loss_pct = ?, target_pct = ?
+            SET symbol_name = ?, time_frame = ?, volume_difference = ?,
+                stop_loss_pct = ?, target_pct = ?, tsl = ?
             WHERE id = ?
             """,
             (
@@ -78,6 +82,7 @@ def update_symbol(
                 volume_difference,
                 stop_loss_pct,
                 target_pct,
+                tsl,
                 symbol_id,
             ),
         )
@@ -105,8 +110,8 @@ def replace_all_symbols(rows: list[dict]) -> list[dict]:
             conn.execute(
                 """
                 INSERT INTO symbol_settings
-                    (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct)
-                VALUES (?, ?, ?, ?, ?)
+                    (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, tsl)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["symbol_name"],
@@ -114,10 +119,134 @@ def replace_all_symbols(rows: list[dict]) -> list[dict]:
                     row["volume_difference"],
                     row["stop_loss_pct"],
                     row["target_pct"],
+                    row.get("tsl", 0),
                 ),
             )
         conn.commit()
     return list_symbols()
+
+
+def list_scanner_symbols() -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scanner_settings ORDER BY id ASC"
+        ).fetchall()
+    return [scanner_row_to_dict(r) for r in rows]
+
+
+def get_scanner_symbol(scanner_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM scanner_settings WHERE id = ?",
+            (scanner_id,),
+        ).fetchone()
+    return scanner_row_to_dict(row) if row else None
+
+
+def create_scanner_symbol(symbol_name: str, time_frame: str) -> dict:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO scanner_settings (symbol_name, time_frame)
+            VALUES (?, ?)
+            """,
+            (symbol_name, time_frame),
+        )
+        conn.commit()
+        scanner_id = cur.lastrowid
+    return get_scanner_symbol(scanner_id)
+
+
+def update_scanner_symbol(
+    scanner_id: int,
+    symbol_name: str,
+    time_frame: str,
+) -> dict | None:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            UPDATE scanner_settings
+            SET symbol_name = ?, time_frame = ?
+            WHERE id = ?
+            """,
+            (symbol_name, time_frame, scanner_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
+    return get_scanner_symbol(scanner_id)
+
+
+def delete_scanner_symbol(scanner_id: int) -> bool:
+    with get_connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM scanner_settings WHERE id = ?",
+            (scanner_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def replace_all_scanner_symbols(rows: list[dict]) -> list[dict]:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM scanner_settings")
+        for row in rows:
+            conn.execute(
+                """
+                INSERT INTO scanner_settings (symbol_name, time_frame)
+                VALUES (?, ?)
+                """,
+                (row["symbol_name"], row["time_frame"]),
+            )
+        conn.commit()
+    return list_scanner_symbols()
+
+
+def update_scanner_prev_close(
+    scanner_id: int,
+    prev_close: float,
+    fetched_at: str,
+) -> dict | None:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            UPDATE scanner_settings
+            SET prev_close = ?, prev_close_fetched_at = ?
+            WHERE id = ?
+            """,
+            (prev_close, fetched_at, scanner_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
+    return get_scanner_symbol(scanner_id)
+
+
+def clear_scanner_prev_closes() -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE scanner_settings
+            SET prev_close = NULL, prev_close_fetched_at = NULL
+            """
+        )
+        conn.commit()
+
+
+def bootstrap_scanner_from_csv(csv_path) -> int:
+    """Import scanner.csv when the table is empty. Returns rows imported."""
+    if list_scanner_symbols():
+        return 0
+    path = csv_path
+    if not path.exists():
+        return 0
+    from app.scanner_csv import parse_scanner_csv
+
+    rows, errors = parse_scanner_csv(path.read_bytes())
+    if errors or not rows:
+        return 0
+    replace_all_scanner_symbols(rows)
+    return len(rows)
 
 
 def list_order_logs() -> list[dict]:
@@ -616,11 +745,13 @@ def _strategy_row_to_dict(row) -> dict:
     keys = row.keys()
     max_trades = row["max_trades"] if "max_trades" in keys else 2
     timezone = row["timezone"] if "timezone" in keys else "Asia/Kolkata"
+    vwap_enabled = row["vwap_enabled"] if "vwap_enabled" in keys else 1
     return {
         "start_time": row["start_time"],
         "stop_time": row["stop_time"],
         "max_trades": int(max_trades),
         "timezone": timezone,
+        "vwap_enabled": bool(vwap_enabled),
         "is_running": bool(row["is_running"]),
         "api_connected": bool(row["api_connected"]),
     }
@@ -637,6 +768,7 @@ def get_strategy_settings() -> dict:
             "stop_time": "15:00",
             "max_trades": 2,
             "timezone": "Asia/Kolkata",
+            "vwap_enabled": True,
             "is_running": False,
             "api_connected": False,
         }
@@ -654,6 +786,35 @@ def count_trades_today() -> int:
             (market_tz.today_key_ist(),),
         ).fetchone()
     return int(row["cnt"]) if row else 0
+
+
+def symbols_traded_today() -> set[str]:
+    """Symbol names that already had an entry today (open or closed)."""
+    today = market_tz.today_key_ist()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT symbol_name FROM trades
+            WHERE date(entry_time) = date(?)
+            """,
+            (today,),
+        ).fetchall()
+    return {str(r["symbol_name"]).upper() for r in rows}
+
+
+def has_symbol_traded_today(symbol_name: str) -> bool:
+    today = market_tz.today_key_ist()
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM trades
+            WHERE date(entry_time) = date(?)
+              AND symbol_name = ? COLLATE NOCASE
+            LIMIT 1
+            """,
+            (today, symbol_name.strip()),
+        ).fetchone()
+    return row is not None
 
 
 def get_open_trade() -> dict | None:
@@ -753,16 +914,34 @@ def update_strategy_config(
     stop_time: str,
     max_trades: int,
     timezone: str = "Asia/Kolkata",
+    vwap_enabled: bool | None = None,
 ) -> dict:
     with get_connection() as conn:
-        conn.execute(
-            """
-            UPDATE strategy_settings
-            SET start_time = ?, stop_time = ?, max_trades = ?, timezone = ?
-            WHERE id = 1
-            """,
-            (start_time, stop_time, max_trades, timezone.strip()),
-        )
+        if vwap_enabled is None:
+            conn.execute(
+                """
+                UPDATE strategy_settings
+                SET start_time = ?, stop_time = ?, max_trades = ?, timezone = ?
+                WHERE id = 1
+                """,
+                (start_time, stop_time, max_trades, timezone.strip()),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE strategy_settings
+                SET start_time = ?, stop_time = ?, max_trades = ?, timezone = ?,
+                    vwap_enabled = ?
+                WHERE id = 1
+                """,
+                (
+                    start_time,
+                    stop_time,
+                    max_trades,
+                    timezone.strip(),
+                    1 if vwap_enabled else 0,
+                ),
+            )
         conn.commit()
     return get_strategy_settings()
 

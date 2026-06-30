@@ -118,6 +118,7 @@ class MarketWebSocketManager:
         self._lock = threading.Lock()
         self._depth: dict[str, dict[str, Any]] = {}
         self._ltp: dict[str, float] = {}
+        self._ltp_at: dict[str, float] = {}
         self._depth_socket = None
         self._quote_socket = None
         self._fyers_symbols: list[str] = []
@@ -171,6 +172,17 @@ class MarketWebSocketManager:
             return
 
         key = _short_name(fyers_sym)
+        ltp_val = message.get("ltp")
+        if ltp_val is not None:
+            try:
+                ltp_f = float(ltp_val)
+                if ltp_f > 0:
+                    with self._lock:
+                        self._ltp[key] = ltp_f
+                        self._ltp_at[key] = time.time()
+            except (TypeError, ValueError):
+                pass
+
         entry = self._merge_market(
             key,
             {
@@ -207,8 +219,14 @@ class MarketWebSocketManager:
         key = _short_name(fyers_sym)
         ltp_val = message.get("ltp")
         if ltp_val is not None:
-            with self._lock:
-                self._ltp[key] = float(ltp_val)
+            try:
+                ltp_f = float(ltp_val)
+                if ltp_f > 0:
+                    with self._lock:
+                        self._ltp[key] = ltp_f
+                        self._ltp_at[key] = time.time()
+            except (TypeError, ValueError):
+                pass
 
         bid_price = float(message.get("bid_price") or 0)
         ask_price = float(message.get("ask_price") or 0)
@@ -348,6 +366,7 @@ class MarketWebSocketManager:
         with self._lock:
             self._depth.clear()
             self._ltp.clear()
+            self._ltp_at.clear()
 
     def _start_impl(self, symbol_names: list[str]) -> bool:
         from app.fyers_service import to_fyers_symbol
@@ -425,19 +444,28 @@ class MarketWebSocketManager:
             age = time.time() - float(entry.get("updated_at") or 0)
             return {**entry, "cache_age_sec": round(age, 1)}
 
-    def get_ltp(self, symbol_name: str) -> float | None:
+    def set_ltp(self, symbol_name: str, ltp: float) -> None:
+        """Apply LTP from REST quotes into the live cache."""
+        if ltp <= 0:
+            return
+        key = _short_name(symbol_name)
+        with self._lock:
+            self._ltp[key] = ltp
+            self._ltp_at[key] = time.time()
+
+    def get_ltp_with_age(self, symbol_name: str) -> tuple[float | None, float | None]:
+        """Return (ltp, age_seconds) from the WebSocket cache only."""
         key = _short_name(symbol_name)
         with self._lock:
             ltp = self._ltp.get(key)
-            if ltp is not None and ltp > 0:
-                return ltp
-            depth = self._depth.get(key)
-        if depth:
-            bid = float(depth.get("bid_price") or 0)
-            ask = float(depth.get("ask_price") or 0)
-            if bid > 0 and ask > 0:
-                return (bid + ask) / 2.0
-        return None
+            ts = self._ltp_at.get(key)
+        if ltp is None or ltp <= 0 or ts is None:
+            return None, None
+        return ltp, max(0.0, time.time() - ts)
+
+    def get_ltp(self, symbol_name: str) -> float | None:
+        ltp, _age = self.get_ltp_with_age(symbol_name)
+        return ltp
 
     def merge_rest_book(self, symbol_name: str, data: dict[str, Any]) -> None:
         """Apply REST depth() book totals into the live cache (WS LTP/prices kept)."""
@@ -497,6 +525,14 @@ def get_depth(symbol_name: str) -> dict[str, Any] | None:
 
 def get_ltp(symbol_name: str) -> float | None:
     return _manager.get_ltp(symbol_name)
+
+
+def get_ltp_with_age(symbol_name: str) -> tuple[float | None, float | None]:
+    return _manager.get_ltp_with_age(symbol_name)
+
+
+def set_ltp(symbol_name: str, ltp: float) -> None:
+    _manager.set_ltp(symbol_name, ltp)
 
 
 def merge_rest_book(symbol_name: str, data: dict[str, Any]) -> None:

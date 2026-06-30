@@ -11,7 +11,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, time as dt_time
 
-from app import fyers_service, market_tz, repository
+from app import fyers_service, market_tz, repository, scanner_service
 
 _stop_event = threading.Event()
 _thread: threading.Thread | None = None
@@ -19,6 +19,8 @@ _lock = threading.Lock()
 _open_position: OpenPosition | None = None
 _last_tick_at: str | None = None
 _last_signal: str | None = None
+_last_scanner_bias: str | None = None
+_done_today_logged: set[str] = set()
 
 DEFAULT_QTY = int(os.environ.get("STRATEGY_DEFAULT_QTY", "1"))
 
@@ -156,8 +158,16 @@ def get_open_position() -> dict | None:
 def _position_from_trade(trade: dict) -> OpenPosition:
     sym = repository.get_symbol_by_name(trade["symbol_name"])
     side = 1 if trade["side"] == "BUY" else -1
-    sl_pct = float(sym["stop_loss_pct"]) if sym else 0.0
-    tgt_pct = float(sym["target_pct"]) if sym else 0.0
+    sl_pct = float(
+        trade.get("stop_loss_pct")
+        if trade.get("stop_loss_pct") is not None
+        else (sym["stop_loss_pct"] if sym else 0.0)
+    )
+    tgt_pct = float(
+        trade.get("target_pct")
+        if trade.get("target_pct") is not None
+        else (sym["target_pct"] if sym else 0.0)
+    )
     return OpenPosition(
         trade_id=trade["id"],
         symbol_name=trade["symbol_name"],
@@ -268,7 +278,13 @@ def _evaluate_signal(
     return None
 
 
+def _vwap_enabled() -> bool:
+    return bool(repository.get_strategy_settings().get("vwap_enabled", True))
+
+
 def _vwap_allows_entry(sym: dict, signal: str) -> tuple[bool, dict]:
+    if not _vwap_enabled():
+        return True, {}
     time_frame = sym["time_frame"]
     vwap_meta = fyers_service.get_vwap_with_meta(sym["symbol_name"], time_frame)
     if not vwap_meta or vwap_meta.get("vwap") is None:
@@ -320,6 +336,15 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         _last_signal = f"BLOCKED_{open_sym}"
         return
 
+    if repository.has_symbol_traded_today(symbol["symbol_name"]):
+        print(
+            f"[ENTRY BLOCKED] {symbol['symbol_name']} already traded today — "
+            f"one entry per symbol per day",
+            flush=True,
+        )
+        _last_signal = f"DONE_TODAY_{symbol['symbol_name']}"
+        return
+
     side = 1 if signal == "BUY" else -1
     entry_price = depth["ask_price"] if side == 1 else depth["bid_price"]
     if not entry_price or entry_price <= 0:
@@ -329,39 +354,43 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         return
 
     time_frame = symbol["time_frame"]
-    vwap_meta = fyers_service.get_vwap_with_meta(symbol["symbol_name"], time_frame)
-    vwap = vwap_meta.get("vwap") if vwap_meta else None
-    if vwap is None:
-        _log_app(
-            f"Entry skipped — VWAP unavailable for {symbol['symbol_name']} ({time_frame})",
-            {
-                "entry_price": entry_price,
-                "time_frame": time_frame,
-                "vwap_api_request": vwap_meta.get("request") if vwap_meta else None,
-                "vwap_api_response": vwap_meta.get("response") if vwap_meta else None,
-            },
+    vwap_meta = None
+    vwap = None
+    crossover: dict = {}
+    if _vwap_enabled():
+        vwap_meta = fyers_service.get_vwap_with_meta(symbol["symbol_name"], time_frame)
+        vwap = vwap_meta.get("vwap") if vwap_meta else None
+        if vwap is None:
+            _log_app(
+                f"Entry skipped — VWAP unavailable for {symbol['symbol_name']} ({time_frame})",
+                {
+                    "entry_price": entry_price,
+                    "time_frame": time_frame,
+                    "vwap_api_request": vwap_meta.get("request") if vwap_meta else None,
+                    "vwap_api_response": vwap_meta.get("response") if vwap_meta else None,
+                },
+            )
+            print(
+                f"[VWAP] {symbol['symbol_name']} ({time_frame}): unavailable, entry skipped",
+                flush=True,
+            )
+            return
+
+        vwap_ok, vwap_reason, crossover = fyers_service.passes_vwap_crossover_filter(
+            signal, vwap_meta, time_frame
         )
         print(
-            f"[VWAP] {symbol['symbol_name']} ({time_frame}): unavailable, entry skipped",
+            f"[VWAP] {symbol['symbol_name']} tf={time_frame} "
+            f"vwap={vwap:.2f} prev_prev={crossover.get('prev_prev_close')} "
+            f"prev={crossover.get('prev_close')} signal={signal} allowed={vwap_ok}",
             flush=True,
         )
-        return
-
-    vwap_ok, vwap_reason, crossover = fyers_service.passes_vwap_crossover_filter(
-        signal, vwap_meta, time_frame
-    )
-    print(
-        f"[VWAP] {symbol['symbol_name']} tf={time_frame} "
-        f"vwap={vwap:.2f} prev_prev={crossover.get('prev_prev_close')} "
-        f"prev={crossover.get('prev_close')} signal={signal} allowed={vwap_ok}",
-        flush=True,
-    )
-    if not vwap_ok:
-        _log_app(
-            f"{vwap_reason} on {symbol['symbol_name']}",
-            {"signal": signal, **crossover},
-        )
-        return
+        if not vwap_ok:
+            _log_app(
+                f"{vwap_reason} on {symbol['symbol_name']}",
+                {"signal": signal, **crossover},
+            )
+            return
 
     sl_pct = float(symbol["stop_loss_pct"])
     tgt_pct = float(symbol["target_pct"])
@@ -421,14 +450,15 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
             "vwap_crossover": crossover.get("crossover"),
             "stop_loss_pct": sl_pct,
             "target_pct": tgt_pct,
+            "initial_stop_loss": sl_price,
             "volume_difference": volume_threshold,
             "book_buy_qty": book_buy,
             "book_sell_qty": book_sell,
             "volume_trigger": volume_trigger,
-            "vwap_candle_count": vwap_meta.get("candle_count"),
-            "vwap_api_request": vwap_meta.get("request"),
-            "vwap_api_response": vwap_meta.get("response"),
-            "vwap_filter_passed": True,
+            "vwap_candle_count": vwap_meta.get("candle_count") if vwap_meta else None,
+            "vwap_api_request": vwap_meta.get("request") if vwap_meta else None,
+            "vwap_api_response": vwap_meta.get("response") if vwap_meta else None,
+            "vwap_filter_passed": _vwap_enabled(),
             "entry_api_request": order_result.get("request"),
             "entry_api_response": resp,
         },
@@ -630,8 +660,38 @@ def _monitor_open_position():
             _exit_trade("TARGET", exit_price=ltp)
 
 
+def _log_scanner_state(tick_ts: str, allowed: str | None, info: dict) -> None:
+    global _last_scanner_bias
+
+    bias_label = allowed or "NEUTRAL"
+    print(
+        (
+            f"[SCANNER {tick_ts}] buy={info.get('buy_count', 0)} "
+            f"sell={info.get('sell_count', 0)} flat={info.get('flat_count', 0)} "
+            f"missing={info.get('missing', 0)} total={info.get('total', 0)} "
+            f"bias={bias_label}"
+            + (f" -> only {allowed} entries" if allowed else " -> no entries")
+        ),
+        flush=True,
+    )
+
+    if allowed != _last_scanner_bias:
+        _last_scanner_bias = allowed
+        if allowed:
+            _log_app(
+                f"Scanner live bias -> {allowed} "
+                f"({info.get('buy_count')} above / {info.get('sell_count')} below prev close)",
+                info,
+            )
+        elif info.get("total"):
+            _log_app(
+                "Scanner neutral — buy/sell counts tied, entries paused",
+                info,
+            )
+
+
 def _scan_for_entry():
-    global _last_signal
+    global _last_signal, _done_today_logged
 
     if not repository.can_take_more_trades():
         if _last_signal != "MAX_TRADES_REACHED":
@@ -661,7 +721,16 @@ def _scan_for_entry():
         return
 
     tick_ts = market_tz.now_ist().strftime("%H:%M:%S")
+    scanner_bias, scanner_info = scanner_service.get_live_bias()
+    _log_scanner_state(tick_ts, scanner_bias, scanner_info)
+
+    if scanner_info.get("total") and scanner_bias is None:
+        if _last_signal != "SCANNER_NEUTRAL":
+            _last_signal = "SCANNER_NEUTRAL"
+        return
+
     symbol_names = [s["symbol_name"] for s in symbols]
+    traded_today = repository.symbols_traded_today()
     ws_active = fyers_service.is_market_ws_active()
     refreshed = fyers_service.tick_depth_refresh(symbol_names)
 
@@ -669,6 +738,15 @@ def _scan_for_entry():
 
     for sym in symbols:
         name = sym["symbol_name"]
+        if name.upper() in traded_today:
+            if name not in _done_today_logged:
+                _done_today_logged.add(name)
+                print(
+                    f"[ENTRY] {name}: already traded today — skipped for rest of day",
+                    flush=True,
+                )
+            continue
+
         depth = fyers_service.get_market_depth(name)
         if not depth:
             wait_msg = (
@@ -712,14 +790,18 @@ def _scan_for_entry():
         vwap_ok = False
         vwap_note = ""
         if signal:
-            vwap_ok, crossover = _vwap_allows_entry(sym, signal)
-            if crossover:
-                vwap_note = (
-                    f" vwap cross prev_prev={crossover.get('prev_prev_close')} "
-                    f"prev={crossover.get('prev_close')} crossover_ok={vwap_ok}"
-                )
+            if _vwap_enabled():
+                vwap_ok, crossover = _vwap_allows_entry(sym, signal)
+                if crossover:
+                    vwap_note = (
+                        f" vwap cross prev_prev={crossover.get('prev_prev_close')} "
+                        f"prev={crossover.get('prev_close')} crossover_ok={vwap_ok}"
+                    )
+                else:
+                    vwap_note = " vwap=NA"
             else:
-                vwap_note = " vwap=NA"
+                vwap_ok = True
+                vwap_note = " vwap=off"
 
         print(
             (
@@ -734,7 +816,10 @@ def _scan_for_entry():
         )
 
         candidate = _entry_candidate(sym, depth)
-        if candidate:
+        if candidate and (
+            not scanner_info.get("total")
+            or candidate["signal"] == scanner_bias
+        ):
             candidates.append(candidate)
 
     if not candidates:
@@ -743,7 +828,7 @@ def _scan_for_entry():
     if _has_open_position():
         return
 
-    # Pick strongest volume imbalance among all symbols that pass VWAP.
+    # Pick strongest volume imbalance among symbols that pass depth (+ optional VWAP).
     best = max(candidates, key=lambda c: c["margin"])
     sym = best["sym"]
     signal = best["signal"]
@@ -761,6 +846,19 @@ def _scan_for_entry():
                 flush=True,
             )
             return
+
+    scanner_ok, gate_info = scanner_service.evaluate_scanner_gate(signal)
+    if not scanner_ok:
+        gate_key = f"SCANNER_BLOCK_{signal}"
+        if _last_signal != gate_key:
+            _last_signal = gate_key
+            print(
+                f"[SCANNER BLOCK] {signal} blocked — live bias is "
+                f"{gate_info.get('allowed_signal') or 'NEUTRAL'} "
+                f"(buy={gate_info.get('buy_count')} sell={gate_info.get('sell_count')})",
+                flush=True,
+            )
+        return
 
     _log_app(
         f"Signal {signal} on {sym['symbol_name']}: "
@@ -835,6 +933,11 @@ def start() -> tuple[bool, str]:
 
     fyers_service.sync_market_websocket()
 
+    scanner_symbols = repository.list_scanner_symbols()
+    if scanner_symbols:
+        scanner_service.prepare_prev_closes()
+        fyers_service.sync_market_websocket()
+
     if is_engine_running():
         return False, "Strategy engine is already running."
 
@@ -872,11 +975,13 @@ def stop(square_off: bool = True, exit_reason: str = "SESSION") -> tuple[bool, s
 
 def reset_session_state() -> None:
     """Clear in-memory strategy flags after Stop."""
-    global _open_position, _last_signal, _last_tick_at, _thread
+    global _open_position, _last_signal, _last_tick_at, _thread, _last_scanner_bias, _done_today_logged
 
     with _lock:
         _open_position = None
         _last_signal = None
+        _last_scanner_bias = None
+        _done_today_logged = set()
         _last_tick_at = None
         _thread = None
     fyers_service.clear_depth_cache()

@@ -37,6 +37,16 @@ _HEADER_ALIASES: dict[str, str] = {
     "target pct": "target_pct",
 }
 
+_REQUIRED_CSV_FIELDS = frozenset(
+    {
+        "symbol_name",
+        "time_frame",
+        "volume_difference",
+        "stop_loss_pct",
+        "target_pct",
+    }
+)
+
 
 def _norm_header(name: str) -> str:
     return re.sub(r"\s+", " ", (name or "").strip().lower())
@@ -88,7 +98,7 @@ def parse_symbols_csv(file_bytes: bytes) -> tuple[list[dict[str, Any]], list[str
         if key:
             col_map[idx] = key
 
-    required = set(_HEADER_ALIASES.values())
+    required = _REQUIRED_CSV_FIELDS
     if not required.issubset(set(col_map.values())):
         return [], [
             "CSV must have columns: Symbol, Time Frame, Volume Diff, Stop Loss %, Target %"

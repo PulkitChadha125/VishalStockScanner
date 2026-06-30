@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime, time as dt_time
 
-from app import fyers_service, market_tz, repository, strategy_engine
+from app import fyers_service, market_tz, repository, strategy_engine, scanner_service
 
 _thread: threading.Thread | None = None
 _stop = threading.Event()
@@ -83,6 +83,9 @@ def _tick():
             _logged_in_date = tkey
             login_just_succeeded = True
             _log("Auto-login completed at 09:00 schedule", {"available_balance": bal})
+            if repository.list_scanner_symbols():
+                scanner_service.prepare_prev_closes()
+                fyers_service.sync_market_websocket()
         else:
             repository.set_api_connected(False)
             _log("Auto-login failed", {"error": err})

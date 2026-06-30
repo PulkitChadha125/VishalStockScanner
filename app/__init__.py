@@ -15,12 +15,21 @@ def create_app(config_class=Config):
 
     init_db(app.config["DATABASE_PATH"])
 
+    from app.config import Config
+    from app import repository
+
+    imported = repository.bootstrap_scanner_from_csv(Config.SCANNER_CSV_PATH)
+    if imported:
+        print(f"[Scanner] Bootstrapped {imported} symbol(s) from scanner.csv", flush=True)
+
     from app.routes.symbols import symbols_bp
+    from app.routes.scanner import scanner_bp
     from app.routes.pages import pages_bp
     from app.routes.logs import logs_bp
     from app.routes.strategy import strategy_bp
 
     app.register_blueprint(symbols_bp, url_prefix="/api/symbols")
+    app.register_blueprint(scanner_bp, url_prefix="/api/scanner")
     app.register_blueprint(logs_bp, url_prefix="/api/logs")
     app.register_blueprint(strategy_bp, url_prefix="/api/strategy")
     app.register_blueprint(pages_bp)

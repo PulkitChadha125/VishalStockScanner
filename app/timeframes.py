@@ -14,9 +14,13 @@ TIMEFRAME_TO_RESOLUTION: dict[str, str] = {
     "20m": "20",
     "30m": "30",
     "1h": "60",
+    "1d": "1D",
 }
 
 VALID_TIMEFRAMES = frozenset(TIMEFRAME_TO_RESOLUTION.keys())
+
+# Scanner page may use daily candles in addition to intraday watchlist frames.
+SCANNER_VALID_TIMEFRAMES = VALID_TIMEFRAMES
 
 TIMEFRAME_LABELS: dict[str, str] = {
     "1m": "1 minute",
@@ -29,6 +33,7 @@ TIMEFRAME_LABELS: dict[str, str] = {
     "20m": "20 minutes",
     "30m": "30 minutes",
     "1h": "1 hour",
+    "1d": "1 day",
 }
 
 

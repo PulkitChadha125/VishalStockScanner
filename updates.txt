@@ -1,0 +1,53 @@
+I would like to request the following changes in the code:
+
+1. **Scanner CSV Logic**
+
+   * I will add a `scanner.csv` file in the root folder.
+   * This file will contain a list of stocks, for example, 20 stocks.
+   * Before starting the day’s trading activity, the system should fetch the historical data of the previous trading day for all stocks listed in `scanner.csv`.
+   * The system should capture and store the previous day’s closing price for each stock.
+   * For example, if the strategy start time is 9:30 AM and the configured preparation/start time is 9:00 AM, then the previous day’s close should be fetched before the strategy begins.
+
+2. **Buy Entry Criteria**
+   Before taking a buy trade from the current watchlist, the system should validate the following conditions:
+
+   * The broader scanner condition should be checked using stocks from `scanner.csv`.
+   * The current LTP of each stock should be compared with its previous day’s closing price.
+   * A buy setup should be considered valid only if the majority of stocks are in buy mode.
+   * For example, if `scanner.csv` contains 20 stocks, then at least 11 stocks should have current LTP greater than the previous day’s close.
+
+   Condition:
+   `Current LTP > Previous Day Close`
+
+   * Market depth should also be checked.
+   * The buy-side quantity should be greater than the sell-side quantity by at least the configured buffer.
+   * For example, if the buffer is set to `5000`, buy quantity is `25000`, and sell quantity is `20000`, then the condition is valid because the buy side is stronger by the buffer amount.
+
+   Condition:
+   `Buy Quantity - Sell Quantity >= Buffer`
+
+   * The VWAP condition should be configurable through a switch.
+   * If the VWAP switch is set to `true`, then the VWAP condition should be checked.
+   * If the VWAP switch is set to `false`, then the VWAP condition should be skipped.
+
+3. **Sell Entry Criteria**
+   Before taking a sell trade from the current watchlist, the system should validate the following conditions:
+
+   * The broader scanner condition should be checked using stocks from `scanner.csv`.
+   * The current LTP of each stock should be compared with its previous day’s closing price.
+   * A sell setup should be considered valid only if the majority of stocks are in sell mode.
+   * For example, if `scanner.csv` contains 20 stocks, then at least 11 stocks should have current LTP less than the previous day’s close.
+
+   Condition:
+   `Current LTP < Previous Day Close`
+
+   * Market depth should also be checked.
+   * The sell-side quantity should be greater than the buy-side quantity by at least the configured buffer.
+   * For example, if the buffer is set to `5000`, buy quantity is `20000`, and sell quantity is `25000`, then the condition is valid because the sell side is stronger by the buffer amount.
+
+   Condition:
+   `Sell Quantity - Buy Quantity >= Buffer`
+
+   * The VWAP condition should be configurable through a switch.
+   * If the VWAP switch is set to `true`, then the VWAP condition should be checked.
+   * If the VWAP switch is set to `false`, then the VWAP condition should be skipped.

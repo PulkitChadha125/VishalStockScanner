@@ -22,6 +22,12 @@
           <span class="drawer__icon" aria-hidden="true">&#9881;</span>
           Symbol Settings
         </a>
+        <a href="{{ url_for('pages.scanner_settings') }}"
+           class="drawer__link{% if active_page == 'scanner' %} is-active{% endif %}"
+           data-log-label="Nav: Scanner">
+          <span class="drawer__icon" aria-hidden="true">&#128269;</span>
+          Scanner
+        </a>
         <a href="{{ url_for('pages.order_logs') }}"
            class="drawer__link{% if active_page == 'orders' %} is-active{% endif %}"
            data-log-label="Nav: Order Logs">

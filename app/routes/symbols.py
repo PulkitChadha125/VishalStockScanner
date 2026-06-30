@@ -125,6 +125,7 @@ def market_book_snapshot():
     engine_status = strategy_engine.get_engine_status()
     strategy_running = bool(engine_status.get("is_running"))
     can_trade = bool(engine_status.get("can_take_more_trades"))
+    vwap_enabled = bool(engine_status.get("vwap_enabled", True))
     open_position = engine_status.get("open_position")
     open_symbol = open_position["symbol_name"] if open_position else None
 
@@ -139,8 +140,11 @@ def market_book_snapshot():
     else:
         trade_block_reason = None
 
+    traded_today = repository.symbols_traded_today()
+
     for sym in symbols:
         name = sym["symbol_name"]
+        already_traded = name.upper() in traded_today
         depth = fyers_service.get_market_depth(name)
         threshold = float(sym["volume_difference"])
 
@@ -164,7 +168,7 @@ def market_book_snapshot():
         vwap_signal = None
         vwap_ok = None
         vwap_reason = None
-        if signal:
+        if signal and vwap_enabled:
             vwap_meta = fyers_service.get_vwap_with_meta(name, sym["time_frame"])
             vwap_ok, vwap_reason, _ = fyers_service.passes_vwap_crossover_filter(
                 signal,
@@ -173,8 +177,18 @@ def market_book_snapshot():
             )
             if vwap_ok:
                 vwap_signal = signal
+        elif signal and not vwap_enabled:
+            vwap_ok = True
+            vwap_signal = signal
+            vwap_reason = "VWAP filter off"
 
-        trade_ready = bool(signal and vwap_signal and can_trade and strategy_running)
+        trade_ready = bool(
+            signal
+            and vwap_signal
+            and can_trade
+            and strategy_running
+            and not already_traded
+        )
 
         total = book_buy + book_sell
         bid_pct = round((book_buy / total) * 100, 2) if total > 0 else 0
@@ -197,6 +211,7 @@ def market_book_snapshot():
                 "vwap_ok": vwap_ok,
                 "vwap_reason": vwap_reason,
                 "trade_ready": trade_ready,
+                "traded_today": already_traded,
                 "cache_age_sec": depth.get("cache_age_sec"),
                 "book_source": depth.get("book_source", "rest"),
             }
