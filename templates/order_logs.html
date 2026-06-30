@@ -71,7 +71,9 @@
           <th>Symbol</th>
           <th>Side</th>
           <th>Qty</th>
-          <th>Price</th>
+          <th>Share value</th>
+          <th>Exposure</th>
+          <th>Order value</th>
           <th>Exit reason</th>
           <th>Status</th>
           <th>Stop loss</th>
@@ -82,7 +84,7 @@
       </thead>
       <tbody id="order-logs-tbody">
         <tr class="empty-row" id="order-empty-row">
-          <td colspan="12">No trades in this period.</td>
+          <td colspan="14">No trades in this period.</td>
         </tr>
       </tbody>
     </table>
@@ -111,6 +113,36 @@
           <div class="trade-detail__item">
             <span class="trade-detail__label">VWAP <span class="trade-detail__hint" id="detail-vwap-tf"></span></span>
             <span class="trade-detail__value" id="detail-vwap">—</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="trade-detail__section">
+        <h3 class="trade-detail__section-title">Position sizing</h3>
+        <div class="trade-detail__grid">
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Account balance</span>
+            <span class="trade-detail__value" id="detail-balance">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Leverage</span>
+            <span class="trade-detail__value" id="detail-leverage">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Exposure</span>
+            <span class="trade-detail__value" id="detail-exposure">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Share value</span>
+            <span class="trade-detail__value" id="detail-share-value">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Order quantity</span>
+            <span class="trade-detail__value" id="detail-order-qty">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Order value</span>
+            <span class="trade-detail__value" id="detail-order-value">—</span>
           </div>
         </div>
       </section>

@@ -5,7 +5,7 @@ One open position at a time; max trades per day across all symbols.
 
 from __future__ import annotations
 
-import os
+import math
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -22,7 +22,40 @@ _last_signal: str | None = None
 _last_scanner_bias: str | None = None
 _done_today_logged: set[str] = set()
 
-DEFAULT_QTY = int(os.environ.get("STRATEGY_DEFAULT_QTY", "1"))
+
+def _leverage_multiplier() -> float:
+    settings = repository.get_strategy_settings()
+    return float(settings.get("leverage_multiplier") or 1)
+
+
+def calc_exposure_quantity(
+    balance: float,
+    leverage_multiplier: float,
+    share_price: float,
+) -> tuple[int | None, dict]:
+    """
+    Exposure = balance × leverage; qty = floor(exposure / share_price).
+    Example: ₹1L × 5 = ₹5L exposure; share ₹5000 → 100 shares.
+    """
+    exposure = float(balance) * float(leverage_multiplier)
+    meta: dict = {
+        "available_balance": round(float(balance), 2),
+        "leverage_multiplier": float(leverage_multiplier),
+        "exposure": round(exposure, 2),
+        "share_value": round(float(share_price), 2),
+    }
+    if share_price <= 0:
+        meta["order_quantity"] = None
+        meta["order_value"] = None
+        return None, meta
+
+    qty = int(math.floor(exposure / share_price))
+    order_value = qty * share_price
+    meta["order_quantity"] = qty
+    meta["order_value"] = round(order_value, 2)
+    if qty < 1:
+        return None, meta
+    return qty, meta
 
 
 @dataclass
@@ -414,14 +447,47 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         _last_signal = f"BLOCKED_{sym_name}"
         return
 
-    qty = DEFAULT_QTY
+    balance, _bal_detail = fyers_service.fetch_balance()
+    if balance is None or balance <= 0:
+        _log_app(
+            f"Entry skipped — account balance unavailable for {symbol['symbol_name']}",
+            {"balance": balance, "balance_detail": _bal_detail},
+        )
+        print(
+            f"[ENTRY BLOCKED] {symbol['symbol_name']}: balance unavailable",
+            flush=True,
+        )
+        return
+
+    leverage = _leverage_multiplier()
+    qty, sizing = calc_exposure_quantity(balance, leverage, entry_price)
+    if qty is None:
+        _log_app(
+            f"Entry skipped — exposure too small for 1 share on {symbol['symbol_name']} "
+            f"(balance ₹{balance:,.0f} × {leverage} = ₹{sizing['exposure']:,.0f}, "
+            f"share ₹{entry_price:,.2f})",
+            sizing,
+        )
+        print(
+            f"[ENTRY BLOCKED] {symbol['symbol_name']}: qty=0 "
+            f"(exposure {sizing['exposure']:,.0f} / share {entry_price:,.2f})",
+            flush=True,
+        )
+        return
+
     entry_time = _now_market().strftime("%Y-%m-%d %H:%M:%S")
     order_result = fyers_service.place_market_order(symbol["symbol_name"], side, qty)
     resp = order_result.get("response")
     entry_status = fyers_service.order_status_label(resp)
     _log_app(
-        f"ENTRY {signal} {symbol['symbol_name']} @ {entry_price:.2f} ({entry_status})",
-        {"request": order_result.get("request"), "response": resp, "depth": depth},
+        f"ENTRY {signal} {symbol['symbol_name']} qty={qty} @ {entry_price:.2f} "
+        f"(exposure ₹{sizing['exposure']:,.0f}, {entry_status})",
+        {
+            "request": order_result.get("request"),
+            "response": resp,
+            "depth": depth,
+            **sizing,
+        },
     )
     _log_order(
         symbol["symbol_name"],
@@ -461,6 +527,7 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
             "vwap_filter_passed": _vwap_enabled(),
             "entry_api_request": order_result.get("request"),
             "entry_api_response": resp,
+            **sizing,
         },
     )
     if not trade:

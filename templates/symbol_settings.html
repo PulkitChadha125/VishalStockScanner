@@ -41,6 +41,11 @@
         <input type="number" id="strategy-max-trades" value="2" min="1" max="99" step="1" required
                title="Max trades per day (all symbols)">
       </label>
+      <label class="cp-field cp-field--num" for="strategy-leverage">
+        <span class="cp-field__label">Leverage</span>
+        <input type="number" id="strategy-leverage" value="5" min="0.01" step="0.01" required
+               title="Exposure = balance × leverage; qty = exposure ÷ share price">
+      </label>
       <label class="cp-field cp-field--tz" for="strategy-timezone">
         <span class="cp-field__label">Timezone</span>
         <select id="strategy-timezone" title="Trading window uses this timezone (default IST)">

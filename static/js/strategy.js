@@ -13,6 +13,7 @@ const els = {
   maxTrades: document.getElementById("strategy-max-trades"),
   timezone: document.getElementById("strategy-timezone"),
   vwapEnabled: document.getElementById("strategy-vwap-enabled"),
+  leverage: document.getElementById("strategy-leverage"),
   hint: document.getElementById("strategy-hint"),
 };
 
@@ -30,6 +31,7 @@ let state = {
   trades_taken_today: 0,
   available_balance: null,
   vwap_enabled: true,
+  leverage_multiplier: 5,
 };
 
 let pollTimer = null;
@@ -93,6 +95,7 @@ function renderState() {
   if (els.maxTrades) els.maxTrades.disabled = running;
   if (els.timezone) els.timezone.disabled = running;
   if (els.vwapEnabled) els.vwapEnabled.disabled = running;
+  if (els.leverage) els.leverage.disabled = running;
   if (els.btnSaveSettings) els.btnSaveSettings.disabled = running;
 
   if (!els.hint) return;
@@ -113,12 +116,15 @@ function renderState() {
 }
 
 function schedulePayload() {
+  const leverageRaw = els.leverage?.value ?? state.leverage_multiplier ?? 5;
+  const leverage = parseFloat(leverageRaw);
   return {
     start_time: fromInputTime(els.startTime?.value || state.start_time),
     stop_time: fromInputTime(els.stopTime?.value || state.stop_time),
     max_trades: parseInt(els.maxTrades?.value || state.max_trades, 10),
     timezone: els.timezone?.value || state.timezone || "Asia/Kolkata",
     vwap_enabled: els.vwapEnabled ? els.vwapEnabled.checked : state.vwap_enabled !== false,
+    leverage_multiplier: Number.isFinite(leverage) && leverage > 0 ? leverage : 5,
   };
 }
 
@@ -166,6 +172,9 @@ async function loadStrategy() {
     if (els.vwapEnabled) {
       els.vwapEnabled.checked = state.vwap_enabled !== false;
     }
+    if (els.leverage) {
+      els.leverage.value = state.leverage_multiplier ?? 5;
+    }
     renderState();
     updatePolling();
   } catch {
@@ -182,6 +191,10 @@ async function saveSettings() {
       return;
     }
     payload.max_trades = maxTrades;
+  }
+  if (!Number.isFinite(payload.leverage_multiplier) || payload.leverage_multiplier <= 0) {
+    showAppToast("Leverage must be a positive number.");
+    return;
   }
   try {
     state = await apiRequest(`${STRATEGY_API}/times`, {
@@ -239,7 +252,7 @@ if (els.btnLogin) {
 
 if (els.btnStart) {
   els.btnStart.addEventListener("click", async () => {
-  const maxTrades = parseInt(els.maxTrades.value, 10);
+  const maxTrades = parseInt(els.maxTrades?.value || state.max_trades, 10);
   if (!Number.isFinite(maxTrades) || maxTrades < 1) {
     showAppToast("Max trades must be at least 1.");
     return;
@@ -247,6 +260,10 @@ if (els.btnStart) {
 
   const payload = schedulePayload();
   payload.max_trades = maxTrades;
+  if (!Number.isFinite(payload.leverage_multiplier) || payload.leverage_multiplier <= 0) {
+    showAppToast("Leverage must be a positive number.");
+    return;
+  }
 
   try {
     const body = await apiRequest(`${STRATEGY_API}/start`, {

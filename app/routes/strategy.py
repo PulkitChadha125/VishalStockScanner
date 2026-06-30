@@ -78,9 +78,18 @@ def update_times():
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid VWAP setting."}), 400
 
+    try:
+        leverage_multiplier = float(data.get("leverage_multiplier", 5))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Leverage multiplier must be a number."}), 400
+
+    if leverage_multiplier <= 0:
+        return jsonify({"error": "Leverage multiplier must be positive."}), 400
+
     settings = repository.update_strategy_config(
         start_time, stop_time, max_trades, timezone,
         vwap_enabled=vwap_enabled,
+        leverage_multiplier=leverage_multiplier,
     )
     trades_today = repository.count_trades_today()
     _log(
@@ -151,12 +160,21 @@ def start_strategy():
         if max_trades < 1:
             return jsonify({"error": "Max trades must be at least 1."}), 400
         settings = repository.get_strategy_settings()
+        try:
+            leverage_multiplier = float(
+                data.get("leverage_multiplier", settings.get("leverage_multiplier", 5))
+            )
+        except (TypeError, ValueError):
+            return jsonify({"error": "Leverage multiplier must be a number."}), 400
+        if leverage_multiplier <= 0:
+            return jsonify({"error": "Leverage multiplier must be positive."}), 400
         repository.update_strategy_config(
             start_time,
             stop_time,
             max_trades,
             timezone or settings.get("timezone", market_tz.DEFAULT_TIMEZONE),
             vwap_enabled=settings.get("vwap_enabled", True),
+            leverage_multiplier=leverage_multiplier,
         )
 
     # Clear stale DB "running" flag if engine thread is not alive

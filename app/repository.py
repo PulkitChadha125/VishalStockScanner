@@ -305,10 +305,27 @@ def trades_to_log_events(trades: list[dict]) -> list[dict]:
     """One row per entry and one row per exit (chronological, newest first)."""
     events: list[dict] = []
 
+    def _sizing_fields(trade: dict) -> dict:
+        share_value = trade.get("share_value")
+        if share_value is None:
+            share_value = trade.get("entry_price")
+        qty = trade.get("quantity")
+        order_value = trade.get("order_value")
+        if order_value is None and share_value is not None and qty is not None:
+            order_value = float(share_value) * float(qty)
+        return {
+            "share_value": share_value,
+            "exposure": trade.get("exposure"),
+            "leverage_multiplier": trade.get("leverage_multiplier"),
+            "available_balance": trade.get("available_balance"),
+            "order_value": order_value,
+        }
+
     for trade in trades:
         trade_id = trade["id"]
         entry_side = trade["side"]
         exit_side = "SELL" if entry_side == "BUY" else "BUY"
+        sizing = _sizing_fields(trade)
 
         events.append(
             {
@@ -326,6 +343,7 @@ def trades_to_log_events(trades: list[dict]) -> list[dict]:
                 "target": trade["target"],
                 "pnl": None,
                 "is_open": trade["is_open"],
+                **sizing,
             }
         )
 
@@ -346,6 +364,7 @@ def trades_to_log_events(trades: list[dict]) -> list[dict]:
                     "target": trade["target"],
                     "pnl": trade["pnl"],
                     "is_open": False,
+                    **sizing,
                 }
             )
 
@@ -746,12 +765,14 @@ def _strategy_row_to_dict(row) -> dict:
     max_trades = row["max_trades"] if "max_trades" in keys else 2
     timezone = row["timezone"] if "timezone" in keys else "Asia/Kolkata"
     vwap_enabled = row["vwap_enabled"] if "vwap_enabled" in keys else 1
+    leverage = row["leverage_multiplier"] if "leverage_multiplier" in keys else 5
     return {
         "start_time": row["start_time"],
         "stop_time": row["stop_time"],
         "max_trades": int(max_trades),
         "timezone": timezone,
         "vwap_enabled": bool(vwap_enabled),
+        "leverage_multiplier": float(leverage),
         "is_running": bool(row["is_running"]),
         "api_connected": bool(row["api_connected"]),
     }
@@ -769,6 +790,7 @@ def get_strategy_settings() -> dict:
             "max_trades": 2,
             "timezone": "Asia/Kolkata",
             "vwap_enabled": True,
+            "leverage_multiplier": 5.0,
             "is_running": False,
             "api_connected": False,
         }
@@ -915,9 +937,10 @@ def update_strategy_config(
     max_trades: int,
     timezone: str = "Asia/Kolkata",
     vwap_enabled: bool | None = None,
+    leverage_multiplier: float | None = None,
 ) -> dict:
     with get_connection() as conn:
-        if vwap_enabled is None:
+        if vwap_enabled is None and leverage_multiplier is None:
             conn.execute(
                 """
                 UPDATE strategy_settings
@@ -926,7 +949,24 @@ def update_strategy_config(
                 """,
                 (start_time, stop_time, max_trades, timezone.strip()),
             )
-        else:
+        elif vwap_enabled is not None and leverage_multiplier is not None:
+            conn.execute(
+                """
+                UPDATE strategy_settings
+                SET start_time = ?, stop_time = ?, max_trades = ?, timezone = ?,
+                    vwap_enabled = ?, leverage_multiplier = ?
+                WHERE id = 1
+                """,
+                (
+                    start_time,
+                    stop_time,
+                    max_trades,
+                    timezone.strip(),
+                    1 if vwap_enabled else 0,
+                    float(leverage_multiplier),
+                ),
+            )
+        elif vwap_enabled is not None:
             conn.execute(
                 """
                 UPDATE strategy_settings
@@ -940,6 +980,22 @@ def update_strategy_config(
                     max_trades,
                     timezone.strip(),
                     1 if vwap_enabled else 0,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE strategy_settings
+                SET start_time = ?, stop_time = ?, max_trades = ?, timezone = ?,
+                    leverage_multiplier = ?
+                WHERE id = 1
+                """,
+                (
+                    start_time,
+                    stop_time,
+                    max_trades,
+                    timezone.strip(),
+                    float(leverage_multiplier),
                 ),
             )
         conn.commit()

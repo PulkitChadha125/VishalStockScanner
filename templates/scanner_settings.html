@@ -29,6 +29,11 @@
         <span class="cp-field__label">VWAP filter</span>
         <input type="checkbox" id="strategy-vwap-enabled" checked title="When off, VWAP is skipped for watchlist entries">
       </label>
+      <label class="cp-field cp-field--num" for="strategy-leverage">
+        <span class="cp-field__label">Leverage</span>
+        <input type="number" id="strategy-leverage" value="5" min="0.01" step="0.01" required
+               title="Exposure = balance × leverage; qty = exposure ÷ share price">
+      </label>
       <button type="button" id="btn-save-settings" class="btn btn--ghost btn--xs" data-log-label="Click: Save VWAP setting">Save</button>
     </div>
 

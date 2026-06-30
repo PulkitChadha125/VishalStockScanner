@@ -99,8 +99,21 @@ def init_db(database_path: Path) -> None:
             )
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute(
+                "ALTER TABLE strategy_settings ADD COLUMN leverage_multiplier REAL NOT NULL DEFAULT 5"
+            )
+        except sqlite3.OperationalError:
+            pass
         conn.execute(
             "UPDATE strategy_settings SET vwap_enabled = 1 WHERE id = 1 AND vwap_enabled IS NULL"
+        )
+        conn.execute(
+            """
+            UPDATE strategy_settings
+            SET leverage_multiplier = 5
+            WHERE id = 1 AND leverage_multiplier IS NULL
+            """
         )
         try:
             conn.execute(
@@ -260,6 +273,11 @@ def trade_row_to_dict(row: sqlite3.Row) -> dict:
         "entry_api_response": details.get("entry_api_response"),
         "exit_api_request": details.get("exit_api_request"),
         "exit_api_response": details.get("exit_api_response"),
+        "available_balance": details.get("available_balance"),
+        "leverage_multiplier": details.get("leverage_multiplier"),
+        "exposure": details.get("exposure"),
+        "share_value": details.get("share_value"),
+        "order_value": details.get("order_value"),
     }
 
 

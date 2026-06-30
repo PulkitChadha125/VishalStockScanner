@@ -29,6 +29,12 @@ const detailVolumeThreshold = document.getElementById("detail-volume-threshold")
 const detailVolumeTrigger = document.getElementById("detail-volume-trigger");
 const detailBookBuy = document.getElementById("detail-book-buy");
 const detailBookSell = document.getElementById("detail-book-sell");
+const detailBalance = document.getElementById("detail-balance");
+const detailLeverage = document.getElementById("detail-leverage");
+const detailExposure = document.getElementById("detail-exposure");
+const detailShareValue = document.getElementById("detail-share-value");
+const detailOrderQty = document.getElementById("detail-order-qty");
+const detailOrderValue = document.getElementById("detail-order-value");
 const detailEntryRequest = document.getElementById("detail-entry-request");
 const detailEntryResponse = document.getElementById("detail-entry-response");
 const detailExitRequestWrap = document.getElementById("detail-exit-request-wrap");
@@ -60,6 +66,11 @@ function escapeHtml(text) {
 function formatNum(value) {
   if (value == null) return "—";
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+function formatMoney(value) {
+  if (value == null) return "—";
+  return `₹${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }
 
 function formatPct(value) {
@@ -204,13 +215,20 @@ function renderTable(events) {
       ? (ev.is_open ? '<span class="status-pill status-pill--open">OPEN</span>' : "—")
       : escapeHtml(exitReasonLabel(ev.exit_reason));
 
+    const shareValue = ev.share_value != null ? ev.share_value : (isEntry ? ev.price : null);
+    const exposureCell = isEntry ? formatMoney(ev.exposure) : "—";
+    const shareCell = shareValue != null ? formatMoney(shareValue) : "—";
+    const orderValueCell = isEntry ? formatMoney(ev.order_value) : "—";
+
     tr.innerHTML = `
       <td>${escapeHtml(ev.time)}</td>
       <td>${eventTypeBadge(ev.event_type)}</td>
       <td><strong>${escapeHtml(ev.symbol_name)}</strong></td>
       <td><span class="badge badge--${ev.side.toLowerCase()}">${escapeHtml(ev.side)}</span></td>
       <td>${formatNum(ev.quantity)}</td>
-      <td>${formatNum(ev.price)}</td>
+      <td>${shareCell}</td>
+      <td>${exposureCell}</td>
+      <td>${orderValueCell}</td>
       <td>${reasonCell}</td>
       <td><span class="status-pill status-pill--${(ev.status || "").toLowerCase()}">${escapeHtml(ev.status)}</span></td>
       <td>${isEntry ? formatNum(ev.stop_loss) : "—"}</td>
@@ -247,6 +265,27 @@ function fillTradeModal(trade) {
     detailPrevClose.textContent = formatNum(trade.prev_close);
   }
   detailEntryPrice.textContent = formatNum(trade.entry_price);
+  if (detailBalance) {
+    detailBalance.textContent = formatMoney(trade.available_balance);
+  }
+  if (detailLeverage) {
+    detailLeverage.textContent =
+      trade.leverage_multiplier != null ? `${formatNum(trade.leverage_multiplier)}×` : "—";
+  }
+  if (detailExposure) {
+    detailExposure.textContent = formatMoney(trade.exposure);
+  }
+  if (detailShareValue) {
+    detailShareValue.textContent = formatMoney(
+      trade.share_value != null ? trade.share_value : trade.entry_price
+    );
+  }
+  if (detailOrderQty) {
+    detailOrderQty.textContent = formatNum(trade.quantity);
+  }
+  if (detailOrderValue) {
+    detailOrderValue.textContent = formatMoney(trade.order_value);
+  }
   detailVwap.textContent = formatNum(trade.vwap);
   if (detailVwapTf) {
     detailVwapTf.textContent = trade.time_frame ? `(${trade.time_frame})` : "";
