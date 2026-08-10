@@ -278,6 +278,7 @@ def trade_row_to_dict(row: sqlite3.Row) -> dict:
         "exposure": details.get("exposure"),
         "share_value": details.get("share_value"),
         "order_value": details.get("order_value"),
+        "sizing_mode": details.get("sizing_mode"),
     }
 
 

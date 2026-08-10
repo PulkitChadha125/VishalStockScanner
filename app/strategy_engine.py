@@ -22,6 +22,8 @@ _last_signal: str | None = None
 _last_scanner_bias: str | None = None
 _done_today_logged: set[str] = set()
 
+FALLBACK_ENTRY_QTY = 1
+
 
 def _leverage_multiplier() -> float:
     settings = repository.get_strategy_settings()
@@ -56,6 +58,77 @@ def calc_exposure_quantity(
     if qty < 1:
         return None, meta
     return qty, meta
+
+
+def resolve_entry_quantity(
+    balance: float | None,
+    leverage_multiplier: float,
+    share_price: float,
+) -> tuple[int, dict]:
+    """
+    Use exposure-based qty when balance supports at least 1 share.
+    Otherwise fall back to 1 share and still send the order to Fyers.
+    """
+    if (
+        balance is not None
+        and balance > 0
+        and share_price > 0
+    ):
+        qty, sizing = calc_exposure_quantity(balance, leverage_multiplier, share_price)
+        if qty is not None and qty >= 1:
+            sizing["sizing_mode"] = "exposure"
+            return qty, sizing
+
+        exposure = float(balance) * float(leverage_multiplier)
+        return FALLBACK_ENTRY_QTY, {
+            "available_balance": round(float(balance), 2),
+            "leverage_multiplier": float(leverage_multiplier),
+            "exposure": round(exposure, 2),
+            "share_value": round(float(share_price), 2),
+            "order_quantity": FALLBACK_ENTRY_QTY,
+            "order_value": round(FALLBACK_ENTRY_QTY * share_price, 2),
+            "sizing_mode": "fallback_insufficient_exposure",
+        }
+
+    return FALLBACK_ENTRY_QTY, {
+        "available_balance": round(float(balance), 2) if balance is not None else None,
+        "leverage_multiplier": float(leverage_multiplier),
+        "exposure": None,
+        "share_value": round(float(share_price), 2) if share_price > 0 else None,
+        "order_quantity": FALLBACK_ENTRY_QTY,
+        "order_value": round(FALLBACK_ENTRY_QTY * share_price, 2)
+        if share_price > 0
+        else None,
+        "sizing_mode": "fallback_no_balance",
+    }
+
+
+def _place_entry_order(symbol_name: str, side: int, qty: int) -> dict:
+    """Always return request + response dict for order logs."""
+    sym = fyers_service.to_fyers_symbol(symbol_name)
+    try:
+        import FyresIntegration as fyi
+
+        payload = fyi.build_order_payload(sym, qty, 2, side, 0)
+    except Exception as exc:
+        return {
+            "request": {"symbol": sym, "qty": qty, "type": 2, "side": side},
+            "response": {"s": "error", "message": str(exc)},
+        }
+
+    if not fyers_service.is_connected():
+        return {
+            "request": payload,
+            "response": {"s": "error", "message": "Fyers not connected"},
+        }
+
+    try:
+        return fyers_service.place_market_order(symbol_name, side, qty)
+    except Exception as exc:
+        return {
+            "request": payload,
+            "response": {"s": "error", "message": str(exc)},
+        }
 
 
 @dataclass
@@ -448,40 +521,29 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         return
 
     balance, _bal_detail = fyers_service.fetch_balance()
-    if balance is None or balance <= 0:
-        _log_app(
-            f"Entry skipped — account balance unavailable for {symbol['symbol_name']}",
-            {"balance": balance, "balance_detail": _bal_detail},
-        )
-        print(
-            f"[ENTRY BLOCKED] {symbol['symbol_name']}: balance unavailable",
-            flush=True,
-        )
-        return
-
     leverage = _leverage_multiplier()
-    qty, sizing = calc_exposure_quantity(balance, leverage, entry_price)
-    if qty is None:
-        _log_app(
-            f"Entry skipped — exposure too small for 1 share on {symbol['symbol_name']} "
-            f"(balance ₹{balance:,.0f} × {leverage} = ₹{sizing['exposure']:,.0f}, "
-            f"share ₹{entry_price:,.2f})",
-            sizing,
-        )
+    qty, sizing = resolve_entry_quantity(balance, leverage, entry_price)
+    sizing["balance_detail"] = _bal_detail
+
+    if sizing.get("sizing_mode") != "exposure":
         print(
-            f"[ENTRY BLOCKED] {symbol['symbol_name']}: qty=0 "
-            f"(exposure {sizing['exposure']:,.0f} / share {entry_price:,.2f})",
+            f"[ENTRY] {symbol['symbol_name']}: using fallback qty={qty} "
+            f"({sizing.get('sizing_mode')}, balance={balance})",
             flush=True,
         )
-        return
 
     entry_time = _now_market().strftime("%Y-%m-%d %H:%M:%S")
-    order_result = fyers_service.place_market_order(symbol["symbol_name"], side, qty)
+    order_result = _place_entry_order(symbol["symbol_name"], side, qty)
     resp = order_result.get("response")
     entry_status = fyers_service.order_status_label(resp)
+    exposure_note = (
+        f"exposure ₹{sizing['exposure']:,.0f}"
+        if sizing.get("exposure") is not None
+        else sizing.get("sizing_mode", "fallback")
+    )
     _log_app(
         f"ENTRY {signal} {symbol['symbol_name']} qty={qty} @ {entry_price:.2f} "
-        f"(exposure ₹{sizing['exposure']:,.0f}, {entry_status})",
+        f"({exposure_note}, {entry_status})",
         {
             "request": order_result.get("request"),
             "response": resp,

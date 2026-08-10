@@ -106,6 +106,18 @@ def _enrich_from_app_logs(enriched: dict, trade: dict, updates: dict) -> None:
                 enriched["entry_api_response"] = response
                 updates["entry_api_response"] = response
 
+        for key in (
+            "available_balance",
+            "leverage_multiplier",
+            "exposure",
+            "share_value",
+            "order_value",
+            "sizing_mode",
+        ):
+            if enriched.get(key) is None and details.get(key) is not None:
+                enriched[key] = details[key]
+                updates[key] = details[key]
+
     if enriched.get("volume_trigger") is None:
         buy = enriched.get("book_buy_qty")
         sell = enriched.get("book_sell_qty")
