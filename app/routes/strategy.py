@@ -194,11 +194,7 @@ def start_strategy():
         return jsonify({"error": err or "Fyers auto-login failed"}), 400
     repository.set_api_connected(True)
     _log("Re-login on Start successful", {"available_balance": balance})
-    if repository.list_scanner_symbols():
-        from app import scanner_service
-
-        scanner_service.prepare_prev_closes()
-        fyers_service.sync_market_websocket()
+    fyers_service.sync_market_websocket()
 
     settings = repository.get_strategy_settings()
     start_time = start_time or settings["start_time"]

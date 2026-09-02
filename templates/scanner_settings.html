@@ -8,7 +8,9 @@
     <span class="header__logo"></span>
     <h1>Scanner</h1>
   </div>
-  <p class="header__subtitle">Live macro bias — whichever side has more stocks vs prev close allows that trade direction</p>
+  <p class="header__subtitle">
+    Depth majority bias — floor(n/2)+1 BUY or SELL signals on scanner symbols allow that side only on the watchlist
+  </p>
 </header>
 
 <section class="strategy-bar" id="strategy-bar">
@@ -34,28 +36,30 @@
         <input type="number" id="strategy-leverage" value="5" min="0.01" step="0.01" required
                title="Exposure = balance × leverage; qty = exposure ÷ share price">
       </label>
-      <button type="button" id="btn-save-settings" class="btn btn--ghost btn--xs" data-log-label="Click: Save VWAP setting">Save</button>
-    </div>
-
-    <div class="strategy-bar__actions">
-      <button type="button" id="btn-refresh-prev-close" class="btn btn--outline btn--xs" data-log-label="Click: Refresh prev close">Refresh prev close</button>
+      <button type="button" id="btn-save-settings" class="btn btn--ghost btn--xs" data-log-label="Click: Save settings">Save</button>
     </div>
   </div>
-  <p class="strategy-bar__hint" id="strategy-hint">Prev close is fetched at 9:00 login and before strategy start.</p>
+  <p class="strategy-bar__hint" id="strategy-hint">
+    Each scanner symbol uses market depth (total buy vs sell) and its own volume gap. Majority side locks watchlist direction.
+  </p>
 </section>
 
 <main class="main">
   <section class="scanner-summary" id="scanner-summary" aria-live="polite">
     <div class="scanner-summary__card">
-      <span class="scanner-summary__label">Symbols</span>
+      <span class="scanner-summary__label">Symbols (n)</span>
       <span class="scanner-summary__value" id="summary-total">0</span>
     </div>
+    <div class="scanner-summary__card">
+      <span class="scanner-summary__label">Majority needed</span>
+      <span class="scanner-summary__value" id="summary-majority">0</span>
+    </div>
     <div class="scanner-summary__card scanner-summary__card--buy">
-      <span class="scanner-summary__label">Above prev close</span>
+      <span class="scanner-summary__label">BUY signals</span>
       <span class="scanner-summary__value" id="summary-buy">0</span>
     </div>
     <div class="scanner-summary__card scanner-summary__card--sell">
-      <span class="scanner-summary__label">Below prev close</span>
+      <span class="scanner-summary__label">SELL signals</span>
       <span class="scanner-summary__value" id="summary-sell">0</span>
     </div>
     <div class="scanner-summary__card">
@@ -63,7 +67,7 @@
       <span class="scanner-summary__value" id="summary-allowed">—</span>
     </div>
     <div class="scanner-summary__card">
-      <span class="scanner-summary__label">Flat / missing</span>
+      <span class="scanner-summary__label">No signal / missing</span>
       <span class="scanner-summary__value" id="summary-other">0</span>
     </div>
   </section>
@@ -76,23 +80,24 @@
     <span class="toolbar__meta" id="scanner-updated">Updated: —</span>
   </section>
 
-  <section class="table-wrap">
+  <section class="table-wrap table-wrap--wide">
     <table class="data-table" id="scanner-table">
       <thead>
         <tr>
           <th>Symbol</th>
           <th>Timeframe</th>
-          <th>Prev close</th>
-          <th>LTP</th>
-          <th>vs Prev</th>
-          <th>Prev close at</th>
-          <th>LTP at</th>
+          <th>Volume Diff</th>
+          <th>Book buy</th>
+          <th>Book sell</th>
+          <th>Buy diff</th>
+          <th>Sell diff</th>
+          <th>Signal</th>
           <th class="col-actions">Actions</th>
         </tr>
       </thead>
       <tbody id="scanner-tbody">
         <tr class="empty-row" id="empty-row">
-          <td colspan="8">No scanner symbols yet. Click &quot;Add Symbol&quot; or load scanner.csv.</td>
+          <td colspan="9">No scanner symbols yet. Click &quot;Add Symbol&quot; or load scanner.csv.</td>
         </tr>
       </tbody>
     </table>
@@ -123,6 +128,10 @@
           <option value="5m">5 minutes</option>
           <option value="1m">1 minute</option>
         </select>
+      </div>
+      <div class="field">
+        <label for="scanner-volume-diff">Volume Difference</label>
+        <input type="number" id="scanner-volume-diff" name="volume_difference" required min="0" step="1" placeholder="10000">
       </div>
       <p class="form-error" id="form-error" hidden></p>
       <footer class="modal__footer">

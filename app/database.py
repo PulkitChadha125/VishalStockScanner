@@ -73,6 +73,7 @@ def init_db(database_path: Path) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol_name TEXT NOT NULL,
                 time_frame TEXT NOT NULL,
+                volume_difference REAL NOT NULL DEFAULT 0,
                 prev_close REAL,
                 prev_close_fetched_at TEXT
             );
@@ -169,6 +170,15 @@ def init_db(database_path: Path) -> None:
             conn.execute("ALTER TABLE trades ADD COLUMN details TEXT")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute(
+                "ALTER TABLE scanner_settings ADD COLUMN volume_difference REAL NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass
+        conn.execute(
+            "UPDATE scanner_settings SET volume_difference = 0 WHERE volume_difference IS NULL"
+        )
         conn.commit()
 
 
@@ -185,12 +195,19 @@ def get_connection():
 
 
 def scanner_row_to_dict(row: sqlite3.Row) -> dict:
+    keys = row.keys()
+    volume_difference = (
+        row["volume_difference"] if "volume_difference" in keys else 0
+    )
     return {
         "id": row["id"],
         "symbol_name": row["symbol_name"],
         "time_frame": row["time_frame"],
-        "prev_close": row["prev_close"],
-        "prev_close_fetched_at": row["prev_close_fetched_at"],
+        "volume_difference": volume_difference,
+        "prev_close": row["prev_close"] if "prev_close" in keys else None,
+        "prev_close_fetched_at": (
+            row["prev_close_fetched_at"] if "prev_close_fetched_at" in keys else None
+        ),
     }
 
 

@@ -340,11 +340,15 @@ def _open_position_symbol() -> str | None:
 
 def get_engine_status() -> dict:
     settings = repository.get_strategy_settings()
-    engine_alive = _thread is not None and _thread.is_alive()
+    engine_alive = _thread is not None and _thread.is_alive() and not _stop_event.is_set()
 
     # On app restart/crash recovery, DB may say running but no engine thread exists.
     if settings.get("is_running") and not engine_alive:
         repository.set_strategy_running(False)
+        settings = repository.get_strategy_settings()
+    # Keep DB flag true when engine is live (scheduler start must show Stop in UI).
+    elif engine_alive and not settings.get("is_running"):
+        repository.set_strategy_running(True)
         settings = repository.get_strategy_settings()
 
     # Reflect live API connectivity so UI buttons are correct.
@@ -355,8 +359,11 @@ def get_engine_status() -> dict:
     bal = fyers_service.get_cached_balance()
     if bal is None and fyers_service.is_connected():
         bal, _ = fyers_service.fetch_balance()
+    # Effective running for UI: DB flag OR live engine thread
+    is_running = bool(settings.get("is_running")) or engine_alive
     return {
         **settings,
+        "is_running": is_running,
         "trades_taken_today": repository.count_trades_today(),
         "can_take_more_trades": repository.can_take_more_trades(),
         "available_balance": bal,
@@ -796,9 +803,9 @@ def _log_scanner_state(tick_ts: str, allowed: str | None, info: dict) -> None:
     print(
         (
             f"[SCANNER {tick_ts}] buy={info.get('buy_count', 0)} "
-            f"sell={info.get('sell_count', 0)} flat={info.get('flat_count', 0)} "
+            f"sell={info.get('sell_count', 0)} none={info.get('none_count', info.get('flat_count', 0))} "
             f"missing={info.get('missing', 0)} total={info.get('total', 0)} "
-            f"bias={bias_label}"
+            f"majority_need={info.get('majority', 0)} bias={bias_label}"
             + (f" -> only {allowed} entries" if allowed else " -> no entries")
         ),
         flush=True,
@@ -808,13 +815,14 @@ def _log_scanner_state(tick_ts: str, allowed: str | None, info: dict) -> None:
         _last_scanner_bias = allowed
         if allowed:
             _log_app(
-                f"Scanner live bias -> {allowed} "
-                f"({info.get('buy_count')} above / {info.get('sell_count')} below prev close)",
+                f"Scanner depth majority -> {allowed} "
+                f"({info.get('buy_count')} BUY / {info.get('sell_count')} SELL, "
+                f"need {info.get('majority')} of {info.get('total')})",
                 info,
             )
         elif info.get("total"):
             _log_app(
-                "Scanner neutral — buy/sell counts tied, entries paused",
+                "Scanner neutral — neither side reached majority, entries paused",
                 info,
             )
 
@@ -1061,11 +1069,6 @@ def start() -> tuple[bool, str]:
         return False, "Add at least one symbol before starting."
 
     fyers_service.sync_market_websocket()
-
-    scanner_symbols = repository.list_scanner_symbols()
-    if scanner_symbols:
-        scanner_service.prepare_prev_closes()
-        fyers_service.sync_market_websocket()
 
     if is_engine_running():
         return False, "Strategy engine is already running."

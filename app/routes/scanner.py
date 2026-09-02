@@ -33,7 +33,15 @@ def _parse_payload():
             400,
         )
 
-    return (symbol_name.upper(), time_frame), None, None
+    try:
+        volume_difference = float(data.get("volume_difference", 0))
+    except (TypeError, ValueError):
+        return None, jsonify({"error": "Volume difference must be a number."}), 400
+
+    if volume_difference < 0:
+        return None, jsonify({"error": "Volume difference cannot be negative."}), 400
+
+    return (symbol_name.upper(), time_frame, volume_difference), None, None
 
 
 @scanner_bp.route("", methods=["GET"])
@@ -43,36 +51,8 @@ def list_scanner():
 
 @scanner_bp.route("/status", methods=["GET"])
 def scanner_status():
-    symbols = repository.list_scanner_symbols()
     session = market_tz.session_status()
     summary = scanner_service.scanner_status_summary()
-
-    rows: list[dict] = []
-    for sym in symbols:
-        name = sym["symbol_name"]
-        prev = sym.get("prev_close")
-        ltp = fyers_service.get_ltp(name) if fyers_service.is_connected() else None
-        ltp_at = (
-            fyers_service.get_ltp_updated_at(name)
-            if fyers_service.is_connected()
-            else None
-        )
-        bias = None
-        if prev is not None and ltp is not None and ltp > 0:
-            if ltp > prev:
-                bias = "buy"
-            elif ltp < prev:
-                bias = "sell"
-            else:
-                bias = "flat"
-        rows.append(
-            {
-                **sym,
-                "ltp": ltp,
-                "ltp_updated_at": ltp_at,
-                "bias": bias,
-            }
-        )
 
     return jsonify(
         {
@@ -80,37 +60,8 @@ def scanner_status():
             "market_open": session.get("market_open"),
             "updated_at": market_tz.now_ist().strftime("%H:%M:%S"),
             "summary": summary,
-            "symbols": rows,
-        }
-    )
-
-
-@scanner_bp.route("/refresh-prev-close", methods=["POST"])
-def refresh_prev_close():
-    if not fyers_service.is_connected():
-        ok, err, bal = fyers_service.login_from_csv()
-        if not ok:
-            return jsonify({"error": err or "Login required to fetch history."}), 400
-        repository.set_api_connected(True)
-        _log_server_activity(
-            "Scanner refresh: auto-login",
-            {"available_balance": bal},
-        )
-
-    if not repository.list_scanner_symbols():
-        return jsonify({"error": "No scanner symbols configured."}), 400
-
-    results = scanner_service.prepare_prev_closes()
-    fyers_service.sync_market_websocket()
-    _log_server_activity(
-        f"Scanner prev-close refreshed ({sum(1 for v in results.values() if v is not None)}/{len(results)})",
-        {"results": results},
-    )
-    return jsonify(
-        {
-            "message": "Previous closes refreshed.",
-            "results": results,
-            "symbols": repository.list_scanner_symbols(),
+            "symbols": summary.get("symbols") or [],
+            "majority": summary.get("majority", 0),
         }
     )
 
@@ -145,7 +96,6 @@ def import_scanner_csv():
     if not rows:
         return jsonify({"error": "No valid scanner rows in CSV."}), 400
 
-    repository.clear_scanner_prev_closes()
     symbols = repository.replace_all_scanner_symbols(rows)
     fyers_service.sync_market_websocket()
     _log_server_activity(
@@ -175,12 +125,18 @@ def create_scanner():
     if err_response is not None:
         return err_response, status
 
-    symbol_name, time_frame = parsed
-    symbol = repository.create_scanner_symbol(symbol_name, time_frame)
+    symbol_name, time_frame, volume_difference = parsed
+    symbol = repository.create_scanner_symbol(
+        symbol_name, time_frame, volume_difference
+    )
     fyers_service.sync_market_websocket()
     _log_server_activity(
         f"Scanner symbol created: {symbol_name}",
-        {"scanner_id": symbol["id"], "time_frame": time_frame},
+        {
+            "scanner_id": symbol["id"],
+            "time_frame": time_frame,
+            "volume_difference": volume_difference,
+        },
     )
     return jsonify(symbol), 201
 
@@ -191,14 +147,19 @@ def update_scanner(scanner_id):
     if err_response is not None:
         return err_response, status
 
-    symbol_name, time_frame = parsed
-    symbol = repository.update_scanner_symbol(scanner_id, symbol_name, time_frame)
+    symbol_name, time_frame, volume_difference = parsed
+    symbol = repository.update_scanner_symbol(
+        scanner_id, symbol_name, time_frame, volume_difference
+    )
     if not symbol:
         return jsonify({"error": "Scanner symbol not found."}), 404
     fyers_service.sync_market_websocket()
     _log_server_activity(
         f"Scanner symbol updated: {symbol_name}",
-        {"scanner_id": scanner_id},
+        {
+            "scanner_id": scanner_id,
+            "volume_difference": volume_difference,
+        },
     )
     return jsonify(symbol)
 

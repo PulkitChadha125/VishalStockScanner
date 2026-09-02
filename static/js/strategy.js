@@ -55,11 +55,15 @@ function fromInputTime(value) {
   return value || "09:30";
 }
 
+function isStrategyRunning() {
+  return Boolean(state.is_running || state.engine_alive);
+}
+
 function renderState() {
   if (!els.apiStatus || !els.strategyStatus) return;
 
   const apiOn = state.api_connected;
-  const running = state.is_running;
+  const running = isStrategyRunning();
 
   els.apiStatus.dataset.state = apiOn ? "connected" : "disconnected";
   els.apiStatus.querySelector(".status-pill__text").textContent = apiOn
@@ -133,16 +137,15 @@ function updatePolling() {
     clearInterval(pollTimer);
     pollTimer = null;
   }
-  if (state.is_running) {
-    pollTimer = setInterval(async () => {
-      try {
-        state = await apiRequest(STRATEGY_API);
-        renderState();
-      } catch {
-        // ignore background poll errors
-      }
-    }, 1000);
-  }
+  // Always poll so scheduler auto-start/stop updates Start/Stop buttons.
+  pollTimer = setInterval(async () => {
+    try {
+      state = await apiRequest(STRATEGY_API);
+      renderState();
+    } catch {
+      // ignore background poll errors
+    }
+  }, isStrategyRunning() ? 1000 : 2000);
 }
 
 async function apiRequest(url, options = {}) {

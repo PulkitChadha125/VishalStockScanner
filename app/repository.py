@@ -143,14 +143,16 @@ def get_scanner_symbol(scanner_id: int) -> dict | None:
     return scanner_row_to_dict(row) if row else None
 
 
-def create_scanner_symbol(symbol_name: str, time_frame: str) -> dict:
+def create_scanner_symbol(
+    symbol_name: str, time_frame: str, volume_difference: float = 0
+) -> dict:
     with get_connection() as conn:
         cur = conn.execute(
             """
-            INSERT INTO scanner_settings (symbol_name, time_frame)
-            VALUES (?, ?)
+            INSERT INTO scanner_settings (symbol_name, time_frame, volume_difference)
+            VALUES (?, ?, ?)
             """,
-            (symbol_name, time_frame),
+            (symbol_name, time_frame, volume_difference),
         )
         conn.commit()
         scanner_id = cur.lastrowid
@@ -161,15 +163,16 @@ def update_scanner_symbol(
     scanner_id: int,
     symbol_name: str,
     time_frame: str,
+    volume_difference: float = 0,
 ) -> dict | None:
     with get_connection() as conn:
         cur = conn.execute(
             """
             UPDATE scanner_settings
-            SET symbol_name = ?, time_frame = ?
+            SET symbol_name = ?, time_frame = ?, volume_difference = ?
             WHERE id = ?
             """,
-            (symbol_name, time_frame, scanner_id),
+            (symbol_name, time_frame, volume_difference, scanner_id),
         )
         conn.commit()
         if cur.rowcount == 0:
@@ -193,44 +196,18 @@ def replace_all_scanner_symbols(rows: list[dict]) -> list[dict]:
         for row in rows:
             conn.execute(
                 """
-                INSERT INTO scanner_settings (symbol_name, time_frame)
-                VALUES (?, ?)
+                INSERT INTO scanner_settings
+                    (symbol_name, time_frame, volume_difference)
+                VALUES (?, ?, ?)
                 """,
-                (row["symbol_name"], row["time_frame"]),
+                (
+                    row["symbol_name"],
+                    row["time_frame"],
+                    float(row.get("volume_difference") or 0),
+                ),
             )
         conn.commit()
     return list_scanner_symbols()
-
-
-def update_scanner_prev_close(
-    scanner_id: int,
-    prev_close: float,
-    fetched_at: str,
-) -> dict | None:
-    with get_connection() as conn:
-        cur = conn.execute(
-            """
-            UPDATE scanner_settings
-            SET prev_close = ?, prev_close_fetched_at = ?
-            WHERE id = ?
-            """,
-            (prev_close, fetched_at, scanner_id),
-        )
-        conn.commit()
-        if cur.rowcount == 0:
-            return None
-    return get_scanner_symbol(scanner_id)
-
-
-def clear_scanner_prev_closes() -> None:
-    with get_connection() as conn:
-        conn.execute(
-            """
-            UPDATE scanner_settings
-            SET prev_close = NULL, prev_close_fetched_at = NULL
-            """
-        )
-        conn.commit()
 
 
 def bootstrap_scanner_from_csv(csv_path) -> int:

@@ -1,4 +1,4 @@
-"""CSV export/import for scanner symbols (Name, Timeframe)."""
+"""CSV export/import for scanner symbols (Name, Timeframe, Volume Diff)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 from app.timeframes import SCANNER_VALID_TIMEFRAMES, allowed_timeframes_display
 
-CSV_HEADERS = ("Name", "Timeframe")
+CSV_HEADERS = ("Name", "Timeframe", "Volume Diff")
 
 _HEADER_ALIASES: dict[str, str] = {
     "name": "symbol_name",
@@ -19,6 +19,10 @@ _HEADER_ALIASES: dict[str, str] = {
     "timeframe": "time_frame",
     "time frame": "time_frame",
     "time_frame": "time_frame",
+    "volume diff": "volume_difference",
+    "volume difference": "volume_difference",
+    "volume_difference": "volume_difference",
+    "vol diff": "volume_difference",
 }
 
 
@@ -26,12 +30,25 @@ def _norm_header(name: str) -> str:
     return re.sub(r"\s+", " ", (name or "").strip().lower())
 
 
+def _parse_number(value: str) -> float:
+    text = (value or "").strip().replace(",", "")
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    return float(text)
+
+
 def scanner_to_csv(symbols: list[dict]) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(CSV_HEADERS)
     for s in symbols:
-        writer.writerow([s["symbol_name"], s["time_frame"]])
+        writer.writerow(
+            [
+                s["symbol_name"],
+                s.get("time_frame") or "1d",
+                s.get("volume_difference", 0),
+            ]
+        )
     return buf.getvalue()
 
 
@@ -55,9 +72,11 @@ def parse_scanner_csv(file_bytes: bytes) -> tuple[list[dict[str, Any]], list[str
         if key:
             col_map[idx] = key
 
-    required = set(_HEADER_ALIASES.values())
-    if not required.issubset(set(col_map.values())):
-        return [], ["CSV must have columns: Name, Timeframe"]
+    mapped = set(col_map.values())
+    if "symbol_name" not in mapped or "time_frame" not in mapped:
+        return [], [
+            "CSV must have columns: Name, Timeframe, Volume Diff (Volume Diff optional, default 0)"
+        ]
 
     parsed: list[dict[str, Any]] = []
     for line_no, row in enumerate(rows[1:], start=2):
@@ -83,10 +102,22 @@ def parse_scanner_csv(file_bytes: bytes) -> tuple[list[dict[str, Any]], list[str
             )
             continue
 
+        try:
+            vol_raw = record.get("volume_difference", "").strip()
+            volume_difference = _parse_number(vol_raw) if vol_raw else 0.0
+        except ValueError:
+            errors.append(f"Row {line_no}: invalid volume difference.")
+            continue
+
+        if volume_difference < 0:
+            errors.append(f"Row {line_no}: volume difference cannot be negative.")
+            continue
+
         parsed.append(
             {
                 "symbol_name": symbol_name.upper(),
                 "time_frame": tf,
+                "volume_difference": volume_difference,
             }
         )
 

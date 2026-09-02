@@ -27,19 +27,25 @@ function showToast(message) {
 
 function escapeHtml(text) {
   const div = document.createElement("div");
-  div.textContent = text;
+  div.textContent = text == null ? "" : String(text);
   return div.innerHTML;
 }
 
-function formatPrice(value) {
+function formatNum(value) {
   if (value == null || Number.isNaN(Number(value))) return "—";
-  return Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-function biasLabel(bias) {
-  if (bias === "buy") return '<span class="tag tag--buy">Above</span>';
-  if (bias === "sell") return '<span class="tag tag--sell">Below</span>';
-  if (bias === "flat") return '<span class="tag">Equal</span>';
+function signalLabel(signal, bias) {
+  if (signal === "BUY" || bias === "buy") {
+    return '<span class="tag tag--buy">BUY</span>';
+  }
+  if (signal === "SELL" || bias === "sell") {
+    return '<span class="tag tag--sell">SELL</span>';
+  }
+  if (bias === "missing_depth") {
+    return '<span class="tag tag--muted">No depth</span>';
+  }
   return '<span class="tag tag--muted">—</span>';
 }
 
@@ -52,10 +58,12 @@ function allowedLabel(signal, isNeutral) {
 
 function renderSummary(summary) {
   document.getElementById("summary-total").textContent = summary.total ?? 0;
+  const maj = document.getElementById("summary-majority");
+  if (maj) maj.textContent = summary.majority ?? 0;
   document.getElementById("summary-buy").textContent = summary.buy_count ?? 0;
   document.getElementById("summary-sell").textContent = summary.sell_count ?? 0;
   document.getElementById("summary-other").textContent =
-    (summary.flat_count ?? 0) + (summary.missing ?? 0);
+    (summary.none_count ?? summary.flat_count ?? 0) + (summary.missing ?? 0);
   document.getElementById("summary-allowed").innerHTML = allowedLabel(
     summary.allowed_signal,
     summary.is_neutral
@@ -76,12 +84,13 @@ function renderTable(symbols) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><strong>${escapeHtml(s.symbol_name)}</strong></td>
-      <td>${escapeHtml(s.time_frame)}</td>
-      <td>${formatPrice(s.prev_close)}</td>
-      <td>${formatPrice(s.ltp)}</td>
-      <td>${biasLabel(s.bias)}</td>
-      <td>${escapeHtml(s.prev_close_fetched_at || "—")}</td>
-      <td>${escapeHtml(s.ltp_updated_at || "—")}</td>
+      <td>${escapeHtml(s.time_frame || "—")}</td>
+      <td>${formatNum(s.volume_difference)}</td>
+      <td>${formatNum(s.bid_qty)}</td>
+      <td>${formatNum(s.ask_qty)}</td>
+      <td>${formatNum(s.buy_diff)}</td>
+      <td>${formatNum(s.sell_diff)}</td>
+      <td>${signalLabel(s.signal, s.bias)}</td>
       <td class="col-actions">
         <div class="action-group">
           <button type="button" class="btn btn--sm btn--edit" data-edit="${s.id}">Edit</button>
@@ -101,6 +110,8 @@ function openModal(title, data = null) {
   document.getElementById("scanner-id").value = data?.id ?? "";
   document.getElementById("scanner-name").value = data?.symbol_name ?? "";
   document.getElementById("scanner-timeframe").value = data?.time_frame ?? "1d";
+  document.getElementById("scanner-volume-diff").value =
+    data?.volume_difference ?? 10000;
 
   editingId = data?.id ?? null;
   modal.classList.add("is-open");
@@ -119,6 +130,9 @@ function getFormPayload() {
   return {
     symbol_name: document.getElementById("scanner-name").value.trim(),
     time_frame: document.getElementById("scanner-timeframe").value,
+    volume_difference: parseFloat(
+      document.getElementById("scanner-volume-diff").value
+    ),
   };
 }
 
@@ -136,7 +150,7 @@ async function loadStatus() {
 }
 
 document.getElementById("btn-add").addEventListener("click", () => {
-  openModal("Add Scanner Symbol", { time_frame: "1d" });
+  openModal("Add Scanner Symbol", { time_frame: "1d", volume_difference: 10000 });
 });
 
 document.getElementById("btn-download-csv").addEventListener("click", () => {
@@ -163,22 +177,6 @@ document.getElementById("csv-file-input").addEventListener("change", async (e) =
     await loadStatus();
   } catch (err) {
     showToast(err.message || "CSV import failed.");
-  }
-});
-
-document.getElementById("btn-refresh-prev-close").addEventListener("click", async () => {
-  const btn = document.getElementById("btn-refresh-prev-close");
-  btn.disabled = true;
-  try {
-    const res = await fetch(`${API_BASE}/refresh-prev-close`, { method: "POST" });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Refresh failed");
-    showToast(data.message || "Previous closes refreshed.");
-    await loadStatus();
-  } catch (err) {
-    showToast(err.message || "Could not refresh prev close.");
-  } finally {
-    btn.disabled = false;
   }
 });
 
@@ -217,6 +215,12 @@ form.addEventListener("submit", async (e) => {
   formError.hidden = true;
 
   const payload = getFormPayload();
+  if (!Number.isFinite(payload.volume_difference) || payload.volume_difference < 0) {
+    formError.textContent = "Volume difference must be 0 or greater.";
+    formError.hidden = false;
+    return;
+  }
+
   const url = editingId ? `${API_BASE}/${editingId}` : API_BASE;
   const method = editingId ? "PUT" : "POST";
 

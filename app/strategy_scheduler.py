@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime, time as dt_time
 
-from app import fyers_service, market_tz, repository, strategy_engine, scanner_service
+from app import fyers_service, market_tz, repository, strategy_engine
 
 _thread: threading.Thread | None = None
 _stop = threading.Event()
@@ -67,8 +67,6 @@ def _tick():
     start_t = _parse_hhmm(settings["start_time"])
     stop_t = _parse_hhmm(settings["stop_time"])
 
-    login_just_succeeded = False
-
     # Auto login once/day at or after 09:00 — clear any prior-day open trades first
     if now_t >= login_t and _logged_in_date != tkey:
         stale = repository.finalize_stale_open_trades()
@@ -81,33 +79,14 @@ def _tick():
         if ok:
             repository.set_api_connected(True)
             _logged_in_date = tkey
-            login_just_succeeded = True
             _log("Auto-login completed at 09:00 schedule", {"available_balance": bal})
-            if repository.list_scanner_symbols():
-                scanner_service.prepare_prev_closes()
-                fyers_service.sync_market_websocket()
+            fyers_service.sync_market_websocket()
         else:
             repository.set_api_connected(False)
             _log("Auto-login failed", {"error": err})
 
-    # If you start the app mid-day: after login, run strategy so depth/VWAP scans begin.
-    if (
-        login_just_succeeded
-        and start_t <= now_t < stop_t
-        and not strategy_engine.is_engine_running()
-    ):
-        ok, err = strategy_engine.start()
-        if ok:
-            _started_date = tkey
-            _eod_handled_date = None
-            _log(
-                "Strategy started after login (trading window active — fetching symbol depth)",
-                {"start_time": settings["start_time"], "stop_time": settings["stop_time"]},
-            )
-        else:
-            _log("Could not start strategy after login", {"reason": err})
-
-    # Auto start once/day only within grace window after start_time (e.g. 09:30–10:00)
+    # Auto start once/day only within grace window after start_time (e.g. 09:30–10:00).
+    # Do not auto-start on every app open mid-session — user uses Start for that.
     if _in_auto_start_window(now_t, start_t, stop_t) and _started_date != tkey:
         if not fyers_service.is_connected():
             ok, err, bal = fyers_service.login_from_csv()
