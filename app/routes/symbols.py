@@ -41,13 +41,15 @@ def _parse_payload():
         volume_difference = float(data["volume_difference"])
         stop_loss_pct = float(data["stop_loss_pct"])
         target_pct = float(data["target_pct"])
+        entry_buffer_pct = float(data.get("entry_buffer_pct", 2))
     except (TypeError, ValueError):
         return (
             None,
             jsonify(
                 {
                     "error": (
-                        "Volume difference, stop loss and target must be numbers."
+                        "Volume difference, stop loss, target and entry buffer "
+                        "must be numbers."
                     )
                 }
             ),
@@ -58,6 +60,8 @@ def _parse_payload():
         return None, jsonify({"error": "Volume difference cannot be negative."}), 400
     if stop_loss_pct <= 0 or target_pct <= 0:
         return None, jsonify({"error": "Stop loss and target must be positive."}), 400
+    if entry_buffer_pct < 0:
+        return None, jsonify({"error": "Entry buffer cannot be negative."}), 400
 
     return (
         symbol_name,
@@ -65,6 +69,7 @@ def _parse_payload():
         volume_difference,
         stop_loss_pct,
         target_pct,
+        entry_buffer_pct,
     ), None, None
 
 
@@ -140,11 +145,8 @@ def market_book_snapshot():
     else:
         trade_block_reason = None
 
-    traded_today = repository.symbols_traded_today()
-
     for sym in symbols:
         name = sym["symbol_name"]
-        already_traded = name.upper() in traded_today
         depth = fyers_service.get_market_depth(name)
         threshold = float(sym["volume_difference"])
 
@@ -168,12 +170,13 @@ def market_book_snapshot():
         vwap_signal = None
         vwap_ok = None
         vwap_reason = None
+        ltp = fyers_service.get_ltp(name)
         if signal and vwap_enabled:
             vwap_meta = fyers_service.get_vwap_with_meta(name, sym["time_frame"])
-            vwap_ok, vwap_reason, _ = fyers_service.passes_vwap_crossover_filter(
-                signal,
-                vwap_meta or {},
-                sym["time_frame"],
+            vwap = vwap_meta.get("vwap") if vwap_meta else None
+            buffer_pct = float(sym.get("entry_buffer_pct") or 0)
+            vwap_ok, vwap_reason, _ = fyers_service.passes_vwap_band_filter(
+                signal, vwap, ltp, buffer_pct
             )
             if vwap_ok:
                 vwap_signal = signal
@@ -187,7 +190,6 @@ def market_book_snapshot():
             and vwap_signal
             and can_trade
             and strategy_running
-            and not already_traded
         )
 
         total = book_buy + book_sell
@@ -202,7 +204,7 @@ def market_book_snapshot():
                 "bid_pct": bid_pct,
                 "bid_price": depth.get("bid_price"),
                 "ask_price": depth.get("ask_price"),
-                "ltp": fyers_service.get_ltp(name),
+                "ltp": ltp,
                 "buy_diff": buy_diff,
                 "sell_diff": sell_diff,
                 "volume_diff": threshold,
@@ -211,7 +213,6 @@ def market_book_snapshot():
                 "vwap_ok": vwap_ok,
                 "vwap_reason": vwap_reason,
                 "trade_ready": trade_ready,
-                "traded_today": already_traded,
                 "cache_age_sec": depth.get("cache_age_sec"),
                 "book_source": depth.get("book_source", "rest"),
             }
@@ -303,9 +304,14 @@ def create_symbol():
     if err_response is not None:
         return err_response, status
 
-    symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct = parsed
+    symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, entry_buffer_pct = parsed
     symbol = repository.create_symbol(
-        symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct
+        symbol_name,
+        time_frame,
+        volume_difference,
+        stop_loss_pct,
+        target_pct,
+        entry_buffer_pct=entry_buffer_pct,
     )
     fyers_service.sync_market_websocket()
     _log_server_activity(
@@ -321,7 +327,7 @@ def update_symbol(symbol_id):
     if err_response is not None:
         return err_response, status
 
-    symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct = parsed
+    symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, entry_buffer_pct = parsed
     symbol = repository.update_symbol(
         symbol_id,
         symbol_name,
@@ -329,6 +335,7 @@ def update_symbol(symbol_id):
         volume_difference,
         stop_loss_pct,
         target_pct,
+        entry_buffer_pct=entry_buffer_pct,
     )
     if not symbol:
         return jsonify({"error": "Symbol not found."}), 404

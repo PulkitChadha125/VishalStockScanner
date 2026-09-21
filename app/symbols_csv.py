@@ -15,6 +15,7 @@ CSV_HEADERS = (
     "Volume Diff",
     "Stop Loss %",
     "Target %",
+    "Entry Buffer %",
 )
 
 _HEADER_ALIASES: dict[str, str] = {
@@ -35,6 +36,10 @@ _HEADER_ALIASES: dict[str, str] = {
     "target": "target_pct",
     "target_pct": "target_pct",
     "target pct": "target_pct",
+    "entry buffer %": "entry_buffer_pct",
+    "entry buffer": "entry_buffer_pct",
+    "entry_buffer_pct": "entry_buffer_pct",
+    "entry buffer pct": "entry_buffer_pct",
 }
 
 _REQUIRED_CSV_FIELDS = frozenset(
@@ -71,6 +76,7 @@ def symbols_to_csv(symbols: list[dict]) -> str:
                 s["volume_difference"],
                 s["stop_loss_pct"],
                 s["target_pct"],
+                s.get("entry_buffer_pct", 2),
             ]
         )
     return buf.getvalue()
@@ -102,6 +108,7 @@ def parse_symbols_csv(file_bytes: bytes) -> tuple[list[dict[str, Any]], list[str
     if not required.issubset(set(col_map.values())):
         return [], [
             "CSV must have columns: Symbol, Time Frame, Volume Diff, Stop Loss %, Target %"
+            " (Entry Buffer % is optional, defaults to 2)"
         ]
 
     parsed: list[dict[str, Any]] = []
@@ -124,6 +131,11 @@ def parse_symbols_csv(file_bytes: bytes) -> tuple[list[dict[str, Any]], list[str
             volume_difference = _parse_number(record.get("volume_difference", ""))
             stop_loss_pct = _parse_number(record.get("stop_loss_pct", ""))
             target_pct = _parse_number(record.get("target_pct", ""))
+            buffer_raw = record.get("entry_buffer_pct")
+            if buffer_raw in (None, ""):
+                entry_buffer_pct = 2.0
+            else:
+                entry_buffer_pct = _parse_number(buffer_raw)
         except ValueError:
             errors.append(f"Row {line_no}: invalid numeric value.")
             continue
@@ -133,6 +145,9 @@ def parse_symbols_csv(file_bytes: bytes) -> tuple[list[dict[str, Any]], list[str
             continue
         if stop_loss_pct <= 0 or target_pct <= 0:
             errors.append(f"Row {line_no}: stop loss and target must be positive.")
+            continue
+        if entry_buffer_pct < 0:
+            errors.append(f"Row {line_no}: entry buffer cannot be negative.")
             continue
 
         tf = time_frame.strip().lower()
@@ -150,6 +165,7 @@ def parse_symbols_csv(file_bytes: bytes) -> tuple[list[dict[str, Any]], list[str
                 "volume_difference": volume_difference,
                 "stop_loss_pct": stop_loss_pct,
                 "target_pct": target_pct,
+                "entry_buffer_pct": entry_buffer_pct,
             }
         )
 

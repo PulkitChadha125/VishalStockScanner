@@ -78,8 +78,8 @@ def init_db(database_path: Path) -> None:
                 prev_close_fetched_at TEXT
             );
 
-            INSERT OR IGNORE INTO strategy_settings (id, start_time, stop_time, timezone)
-            VALUES (1, '09:30', '15:00', 'Asia/Kolkata');
+            INSERT OR IGNORE INTO strategy_settings (id, start_time, stop_time)
+            VALUES (1, '09:30', '15:00');
             """
         )
         try:
@@ -136,6 +136,16 @@ def init_db(database_path: Path) -> None:
             pass
         conn.execute(
             "UPDATE symbol_settings SET tsl = 0 WHERE tsl IS NULL"
+        )
+        try:
+            conn.execute(
+                "ALTER TABLE symbol_settings ADD COLUMN entry_buffer_pct REAL NOT NULL DEFAULT 2"
+            )
+        except sqlite3.OperationalError:
+            pass
+        conn.execute(
+            "UPDATE symbol_settings SET entry_buffer_pct = 2 "
+            "WHERE entry_buffer_pct IS NULL"
         )
         conn.execute(
             """
@@ -214,6 +224,9 @@ def scanner_row_to_dict(row: sqlite3.Row) -> dict:
 def symbol_row_to_dict(row: sqlite3.Row) -> dict:
     keys = row.keys()
     tsl = row["tsl"] if "tsl" in keys else 0
+    entry_buffer = (
+        row["entry_buffer_pct"] if "entry_buffer_pct" in keys else 2
+    )
     return {
         "id": row["id"],
         "symbol_name": row["symbol_name"],
@@ -221,6 +234,7 @@ def symbol_row_to_dict(row: sqlite3.Row) -> dict:
         "volume_difference": row["volume_difference"],
         "stop_loss_pct": row["stop_loss_pct"],
         "target_pct": row["target_pct"],
+        "entry_buffer_pct": float(entry_buffer or 0),
         "tsl": tsl,
     }
 
@@ -274,6 +288,13 @@ def trade_row_to_dict(row: sqlite3.Row) -> dict:
         "prev_prev_close": details.get("prev_prev_close"),
         "prev_close": details.get("prev_close"),
         "vwap_crossover": details.get("vwap_crossover"),
+        "entry_ltp": details.get("entry_ltp"),
+        "entry_buffer_pct": details.get("entry_buffer_pct"),
+        "vwap_band_low": details.get("vwap_band_low"),
+        "vwap_band_high": details.get("vwap_band_high"),
+        "vwap_band_passed": details.get("vwap_band_passed"),
+        "entry_limit_price": details.get("entry_limit_price"),
+        "entry_order_type": details.get("entry_order_type"),
         "stop_loss_pct": details.get("stop_loss_pct"),
         "target_pct": details.get("target_pct"),
         "tsl": details.get("tsl"),
@@ -290,6 +311,21 @@ def trade_row_to_dict(row: sqlite3.Row) -> dict:
         "entry_api_response": details.get("entry_api_response"),
         "exit_api_request": details.get("exit_api_request"),
         "exit_api_response": details.get("exit_api_response"),
+        "entry_order_id": details.get("entry_order_id"),
+        "entry_fill_price": details.get("entry_fill_price"),
+        "exit_mode": details.get("exit_mode"),
+        "target_order_id": details.get("target_order_id"),
+        "sl_order_id": details.get("sl_order_id"),
+        "sl_trigger_price": details.get("sl_trigger_price"),
+        "sl_limit_price": details.get("sl_limit_price"),
+        "target_leg_request": details.get("target_leg_request"),
+        "target_leg_response": details.get("target_leg_response"),
+        "sl_leg_request": details.get("sl_leg_request"),
+        "sl_leg_response": details.get("sl_leg_response"),
+        "exit_leg": details.get("exit_leg"),
+        "exit_leg_state": details.get("exit_leg_state"),
+        "exit_leg_cancels": details.get("exit_leg_cancels"),
+        "exit_via": details.get("exit_via"),
         "available_balance": details.get("available_balance"),
         "leverage_multiplier": details.get("leverage_multiplier"),
         "exposure": details.get("exposure"),

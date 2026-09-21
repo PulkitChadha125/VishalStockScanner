@@ -1,18 +1,20 @@
 # Vishal Trading Strategy - Web Application
 
 A Flask-based trading control panel and execution service using FYERS integration.  
-This app manages **watchlist** symbol settings, a **scanner** macro gate, strategy scheduling, market-depth signal evaluation, trade execution, and full logging (order + app activity).
+This app manages **watchlist** symbol settings, a **scanner** macro gate, strategy scheduling, market-depth signal evaluation, trade execution with **broker-side bracket exits**, and full logging (order + app activity).
 
 ---
 
 ## Table of contents
 
 - [Project specification](#project-specification)
+- [Order flow (entry and exits)](#order-flow-entry-and-exits)
 - [What is implemented today](#what-is-implemented-today)
 - [Tech stack](#tech-stack)
 - [Project structure](#project-structure)
 - [Installation](#installation)
 - [Usage guide](#usage-guide)
+- [Testing](#testing)
 - [REST API reference](#rest-api-reference)
 - [Database](#database)
 - [For developers](#for-developers)
@@ -34,33 +36,105 @@ The strategy has two symbol lists:
 
 Each second during the trading window, the engine:
 
-1. Re-counts scanner symbols vs **previous day close** (live LTP vs static prev close)
-2. Picks the **live trade side** (whichever count is higher: above or below prev close)
-3. Scans watchlist symbols for **market depth** imbalance
-4. Optionally applies **VWAP crossover** (toggle)
+1. Evaluates a **depth signal** for every scanner symbol and takes the **majority side**
+2. Scans watchlist symbols for **market depth** imbalance in that same direction
+3. Optionally applies a **VWAP LTP band** filter (toggle + per-symbol entry buffer)
+4. Sizes the order from **account balance × leverage**
 5. Enters at most **one trade at a time**, respecting the daily cap
+6. Parks the **target and stop loss as live orders at the broker** and cancels the loser when one fills
 
 ### Core rules
 
 | Rule | Description |
 |------|-------------|
-| **Watchlist settings** | Per symbol: name, time frame, volume difference (depth buffer), stop loss %, target % |
-| **Scanner settings** | Per symbol: name, timeframe (e.g. `1d`) — used only for macro bias, not for placing trades |
-| **Scanner bias** | Continuous live count: more stocks **above** prev close → **BUY only**; more **below** → **SELL only**; equal → **no entries** |
+| **Watchlist settings** | Per symbol: name, time frame, volume difference (depth buffer), stop loss %, target %, **entry buffer %** |
+| **Scanner settings** | Per symbol: name, timeframe, volume difference — used only for macro bias, never for placing trades |
+| **Scanner bias** | Live depth signal per scanner symbol; a side needs a **majority** (`floor(n/2)+1`) to unlock entries in that direction |
 | **Trading window** | Strategy runs only between **start time** and **stop time** (e.g. 09:30–15:00) |
-| **One open trade** | Only **one active trade at a time** across the watchlist |
-| **One trade per symbol / day** | Each watchlist symbol can be entered **at most once per day** (after SL, target, or any exit — no re-entry until next session) |
+| **One open trade** | Only **one active trade at a time** across the watchlist, and no new entry until its exit legs are settled |
 | **Max trades per day** | **Universe-wide** daily cap (default **2**) |
-| **Daily schedule** | Auto-login at 09:00 IST, fetch scanner prev closes, auto-start at configured start time, auto-stop at stop time |
-| **VWAP switch** | Global toggle — when **off**, VWAP is skipped for watchlist entries |
+| **Position size** | `quantity = floor(available_balance × leverage_multiplier / share_price)` |
+| **Daily schedule** | Auto-login at 09:00 IST, auto-start at configured start time, auto-stop at stop time |
+| **VWAP switch** | Global toggle — when **off**, the live VWAP LTP band is skipped for watchlist entries |
 
 ### Current scope
 
 - FYERS login from `FyersCredentials.csv`
 - Background strategy engine (1-second scan loop)
-- Scanner prev-close fetch via FYERS history API
+- Depth-based scanner majority gate
+- Exposure-based position sizing
+- Market entry when VWAP is off; **limit entry at the VWAP band edge** when VWAP is on
+- Bracket exit orders (target limit / stop-loss SL-L) with OCO cancellation
 - Auto scheduler (login / start / stop)
 - WebSocket + REST market depth and LTP
+
+---
+
+## Order flow (entry and exits)
+
+### Order types used
+
+Confirmed against the FYERS v3 API (`type`: `1` Limit · `2` Market · `3` SL-M · `4` SL-L; `side`: `1` Buy · `-1` Sell):
+
+| Purpose | FYERS type | Payload |
+|---------|-----------|---------|
+| Entry (VWAP **off**) | `2` Market | `limitPrice: 0`, `stopPrice: 0` |
+| Entry (VWAP **on**) | `1` Limit | `limitPrice` = far edge of the VWAP band (BUY = band low, SELL = band high) |
+| Target | `1` Limit | `limitPrice` = target price |
+| Stop loss | `4` SL-L | `stopPrice` = stop price, `limitPrice` = stop ± buffer |
+
+The target **cannot** be a stop order: FYERS requires a sell trigger to sit **below** LTP and a buy trigger **above** it, so a sell trigger at the profit target is rejected. SL-L direction rules are enforced by the engine — sell legs use `limitPrice ≤ stopPrice`, buy legs use `limitPrice ≥ stopPrice`. All prices are rounded to the ₹0.05 tick.
+
+### Worked example (BUY at 100, SL 2%, target 2%)
+
+| Step | Order sent |
+|------|-----------|
+| 1. Entry | BUY market, quantity from exposure sizing → fills at 100.00 |
+| 2. Target leg | SELL **limit** @ **102.00** |
+| 3. Stop leg | SELL **SL-L**, trigger **98.00**, limit **97.90** |
+| 4. One fills | Say target trades at 102.05 → the SL order is cancelled |
+| 5. Position released | Trade closed at the real traded price; only now can the next entry happen |
+
+For a SELL entry the legs mirror: BUY limit at the target below entry, BUY SL-L with trigger above entry and `limitPrice` above the trigger.
+
+### VWAP-on limit entry (VWAP 100, buffer 2%)
+
+When LTP is inside the band the engine does **not** send a market order. It parks a limit at the far edge and waits for a fill:
+
+| Signal | Allowed LTP | Limit price |
+|--------|-------------|-------------|
+| BUY | 98 to 100 | **98** |
+| SELL | 100 to 102 | **102** |
+
+Quantity is sized off that limit price. Exit legs are placed only after the limit fills. If LTP leaves the band (or the session stops) before a fill, the resting limit is cancelled — there is no market flatten and no P&amp;L, because no shares were bought or sold.
+
+### Levels come from the real fill
+
+After the entry is filled, the engine reads the order's **traded price** from the FYERS orderbook and recomputes SL/target from it, then rewrites those levels on the trade record. The depth-derived estimate is only a fallback.
+
+### Cancellation is confirmed, not assumed
+
+When one leg fills, the other is cancelled and then **re-read from the orderbook** to prove it is gone (up to 3 attempts). If it cannot be confirmed:
+
+- the leg is tracked as pending cleanup,
+- **new entries are blocked** (`PENDING_LEG_CANCEL` in the logs),
+- every tick retries the cancel until the broker confirms it,
+- if that leftover leg executes instead, the resulting position is flattened at market and logged as `RECONCILE_FLATTEN`.
+
+### Fallbacks
+
+| Situation | Behavior |
+|-----------|----------|
+| A leg is rejected at placement (e.g. margin) | Trade runs in `hybrid` mode: the accepted leg stays at the broker, the missing side is watched locally on LTP |
+| Both legs rejected / not connected | Trade runs in `local` mode — the original in-memory SL/target monitoring |
+| A leg is cancelled or expires externally | Dropped to local monitoring, logged |
+| Orderbook polling keeps failing (10 ticks) | Dropped to local monitoring, logged |
+| Manual **Stop**, EOD, or square-off | Pending legs are cancelled **first**, then the market exit is sent. An unfilled VWAP limit is cancelled with no flatten. |
+| LTP leaves the VWAP band before the entry limit fills | Resting limit cancelled; trade closed as `UNFILLED` with zero P&amp;L |
+| A leg fills during that cancel | That fill is recorded as the exit; no second order is sent |
+| App restarts with an open trade | Leg ids are restored from the trade record and monitoring resumes |
+
+`exit_mode` (`broker` / `hybrid` / `local`) is stored on each trade and shown in the order log detail.
 
 ---
 
@@ -70,36 +144,35 @@ Each second during the trading window, the engine:
 
 | Page | URL | Purpose |
 |------|-----|---------|
-| Symbol Settings | `/` | Strategy controls, VWAP toggle, watchlist table, live order book |
-| Scanner | `/scanner` | Scanner symbol CRUD, prev close, live BUY/SELL bias summary |
-| Order Logs | `/order-logs` | Entry/exit rows and P&amp;L |
+| Symbol Settings | `/` | Strategy controls, VWAP toggle, leverage, watchlist table, live order book |
+| Scanner | `/scanner` | Scanner symbol CRUD, live depth majority summary |
+| Order Logs | `/order-logs` | Entry/exit rows, position sizing, exit legs, P&amp;L |
 | App Logs | `/app-logs` | UI clicks and system activity |
 
 ### Symbol Settings (`/`)
 
-- **Strategy bar:** API status, strategy status, balance, start/stop times, max trades, timezone, **VWAP** checkbox, Save, Login, Start, Stop
+- **Strategy bar:** API status, strategy status, balance, start/stop times, max trades, timezone, leverage multiplier, **VWAP** checkbox, Save, Login, Start, Stop
 - **Watchlist table:** add / edit / delete symbols; CSV import/export
 - **Live order book:** per-symbol depth totals, signal, VWAP status
 
 ### Scanner (`/scanner`)
 
-- Manage scanner symbols (add, edit, delete, CSV load/download)
-- **Refresh prev close** — fetches previous trading day close per symbol/timeframe
-- Live summary: count above/below prev close, **Live trade side** (`BUY only` / `SELL only` / `NEUTRAL`)
+- Manage scanner symbols (add, edit, delete, CSV load/download), each with its own **volume difference**
+- Live summary: majority needed, BUY signals, SELL signals, no-signal count, and the resulting **live trade side**
 - Auto-import from root `scanner.csv` on first run if DB is empty
 
 ### Logging
 
 - **App logs:** page views, clicks, strategy/scheduler/scanner events
-- **Order logs:** entries and exits with SL/target/P&amp;L
+- **Order logs:** every order the engine sends — entry, target leg, stop leg, cancellations, exits — plus sizing and P&amp;L
 
 ### Strategy backend
 
 - SQLite (`data/symbols.db`)
-- `app/fyers_service.py` — FYERS auth, history, depth, orders, WebSocket
-- `app/scanner_service.py` — prev close prep + live scanner bias
-- `app/strategy_engine.py` — 1-second loop, entries, exits
-- `app/strategy_scheduler.py` — 09:00 login, prev-close refresh, auto start/stop
+- `app/fyers_service.py` — FYERS auth, history, depth, orders, cancellation, order status, WebSocket
+- `app/scanner_service.py` — depth signal per scanner symbol + live majority bias
+- `app/strategy_engine.py` — 1-second loop, entries, exit legs, OCO handling
+- `app/strategy_scheduler.py` — 09:00 login, auto start/stop
 
 ---
 
@@ -119,15 +192,16 @@ Vishal Project 1/
 ├── main.py
 ├── run.bat
 ├── requirements.txt
-├── scanner.csv              # Bootstrap scanner list (Name, Timeframe) — optional
+├── scanner.csv              # Bootstrap scanner list (Name, Timeframe, Volume Diff) — optional
 ├── FyersCredentials.csv     # FYERS API credentials (keep private)
+├── FyresIntegration.py      # Raw FYERS SDK layer (orders, cancel, orderbook, websockets)
 ├── app/
 │   ├── __init__.py
 │   ├── config.py
 │   ├── database.py
 │   ├── repository.py
 │   ├── scanner_csv.py       # Scanner CSV parse/export
-│   ├── scanner_service.py   # Prev close + live bias
+│   ├── scanner_service.py   # Depth signal + live majority bias
 │   ├── symbols_csv.py       # Watchlist CSV parse/export
 │   ├── fyers_credentials.py
 │   ├── fyers_service.py
@@ -144,7 +218,9 @@ Vishal Project 1/
 ├── templates/
 ├── static/
 │   ├── css/style.css
-│   └── js/                  # symbols, scanner, strategy, market_book, logs
+│   └── js/                  # symbols, scanner, strategy, market_book, order_logs, logs
+├── tests/
+│   └── test_end_to_end.py   # End-to-end order flow test (fake broker)
 └── data/
     └── symbols.db
 ```
@@ -199,42 +275,59 @@ Open: **http://127.0.0.1:5000**
 
 ### Morning workflow
 
-1. Ensure `scanner.csv` exists in the project root (or manage symbols on **Scanner** page).
-2. At **09:00 IST** (or on **Start**): app logs in to FYERS and fetches **previous day close** for all scanner symbols.
-3. Set watchlist on **Symbol Settings**, configure start/stop, max trades, **VWAP** toggle → **Save**.
-4. Click **Start** during the trading window — engine scans every second.
+1. Ensure `scanner.csv` exists in the project root (or manage symbols on the **Scanner** page).
+2. At **09:00 IST**: the app logs in to FYERS automatically.
+3. Set the watchlist on **Symbol Settings**, configure start/stop, max trades, leverage, **VWAP** toggle → **Save**.
+4. Click **Start** during the trading window — the engine scans every second.
 
 ### Symbol Settings (`/`)
 
-1. Set **Start**, **Stop**, **Max** trades, **Timezone**, **VWAP** → **Save**.
-2. **Start** — auto-login if needed, refresh scanner prev closes, start engine.
+1. Set **Start**, **Stop**, **Max** trades, **Timezone**, **Leverage**, **VWAP** → **Save**.
+2. **Start** — auto-login if needed, then start the engine.
 3. Add/edit watchlist symbols (volume diff = depth buffer).
-4. **Stop** — halts strategy, squares off open positions, resets session.
+4. **Stop** — halts the strategy, cancels any live exit legs, squares off open positions, resets the session.
 
 **Max trades example:** Max = 2 → two entries total across all watchlist symbols for the day.
 
+**Leverage example:** balance ₹1,00,000 with leverage 5 → ₹5,00,000 exposure; a ₹5,000 share gives 100 quantity.
+
 ### Scanner (`/scanner`)
 
-1. Review imported symbols (e.g. 20 pharma names with `1d` timeframe).
-2. **Login** to API (from Symbol Settings or refresh flow).
-3. **Refresh prev close** — loads yesterday’s close for each scanner symbol (static for the day).
-4. During market hours, the summary updates every few seconds:
-   - **Above prev close** / **Below prev close** counts
+1. Review imported symbols and set a **volume difference** per symbol.
+2. **Login** to the API (from Symbol Settings).
+3. During market hours the summary updates every few seconds:
+   - **Majority needed**, **BUY signals**, **SELL signals**, **no signal / missing**
    - **Live trade side** — which direction watchlist entries are allowed
 
-Edit the list anytime via UI or **Load CSV**. Symbol count can be 19, 20, 21, etc.; bias logic adapts automatically.
+Edit the list anytime via UI or **Load CSV**. Symbol count can be 10, 20, 100 — the majority adapts automatically.
 
 ### Order Logs & App Logs
 
-- **Order logs** — all entries/exits and P&amp;L.
+- **Order logs** — every order sent (entry, target leg, SL leg, cancels, exits), position sizing, and P&amp;L. Click a row for the full FYERS request/response of each leg.
 - **App logs** — scanner bias changes, scheduler, API actions, UI events.
 
-### Side navigation
+---
 
-- Symbol Settings  
-- **Scanner**  
-- Order Logs  
-- App Logs  
+## Testing
+
+An end-to-end test drives the real engine tick loop against a fake FYERS broker — scanner bias, depth signal, entry, exit legs, OCO cancellation, and the Flask API the UI reads.
+
+```powershell
+.\.venv\Scripts\python.exe tests\test_end_to_end.py
+```
+
+It runs entirely offline against a **temporary database** (it aborts if it is not pointed at one) and never touches `data/symbols.db` or the FYERS API. Scenarios covered:
+
+| Scenario | What it proves |
+|----------|----------------|
+| BUY → target fills | Both legs placed with correct types/prices, SL cancelled, trade closed at the traded price, position released |
+| SELL → stop fills | Short-side legs mirror correctly, target cancelled |
+| SL leg rejected | Falls back to `hybrid` mode and still exits locally on the stop |
+| Cancel not confirmed | Retries, blocks new entries, resumes once the broker confirms |
+| EOD square-off | Cancels both legs before the market exit |
+| API surface | `/api/strategy` and `/api/logs/orders` expose the leg data the UI renders |
+
+Exit code is `0` when every check passes.
 
 ---
 
@@ -264,7 +357,7 @@ Base URL: `http://127.0.0.1:5000`
   "volume_difference": 5000,
   "stop_loss_pct": 1.5,
   "target_pct": 2.0,
-  "tsl": 1
+  "entry_buffer_pct": 2.0
 }
 ```
 
@@ -273,8 +366,7 @@ Base URL: `http://127.0.0.1:5000`
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/scanner` | List scanner symbols |
-| GET | `/api/scanner/status` | Live LTP vs prev close + bias summary |
-| POST | `/api/scanner/refresh-prev-close` | Fetch previous day close for all scanner symbols |
+| GET | `/api/scanner/status` | Live depth signals + majority bias summary |
 | GET | `/api/scanner/export.csv` | Download scanner CSV |
 | POST | `/api/scanner/import.csv` | Replace scanner list from CSV |
 | GET | `/api/scanner/<id>` | Get one scanner symbol |
@@ -287,28 +379,31 @@ Base URL: `http://127.0.0.1:5000`
 ```json
 {
   "symbol_name": "SUNPHARMA",
-  "time_frame": "1d"
+  "time_frame": "1m",
+  "volume_difference": 20000
 }
 ```
+
+Valid `time_frame` values: `1m`, `2m`, `3m`, `4m`, `5m`, `10m`, `15m`, `20m`, `30m`, `1h`, `1d`.
 
 **Scanner CSV format (`scanner.csv`):**
 
 ```csv
-Name,Timeframe
-SUNPHARMA,1d
-CIPLA,1d
+Name,Timeframe,Volume Diff
+SUNPHARMA,1m,20000
+CIPLA,1m,25000
 ```
 
 ### Strategy — `/api/strategy`
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/strategy` | Settings + engine status |
-| PUT | `/api/strategy/times` | Save schedule, max trades, timezone, `vwap_enabled` |
+| GET | `/api/strategy` | Settings + engine status (open position, exit legs, pending cancels) |
+| PUT | `/api/strategy/times` | Save schedule, max trades, timezone, `vwap_enabled`, `leverage_multiplier` |
 | POST | `/api/strategy/login` | Login via CSV credentials |
 | POST | `/api/strategy/logout` | Logout (strategy must be stopped) |
-| POST | `/api/strategy/start` | Auto-login, refresh scanner prev close, start engine |
-| POST | `/api/strategy/stop` | Stop engine, square off, reset session |
+| POST | `/api/strategy/start` | Auto-login if needed, start engine |
+| POST | `/api/strategy/stop` | Stop engine, cancel legs, square off, reset session |
 | GET | `/api/strategy/balance` | FYERS available balance |
 
 **PUT body example:**
@@ -319,7 +414,8 @@ CIPLA,1d
   "stop_time": "15:00",
   "max_trades": 2,
   "timezone": "Asia/Kolkata",
-  "vwap_enabled": true
+  "vwap_enabled": true,
+  "leverage_multiplier": 5
 }
 ```
 
@@ -327,7 +423,10 @@ CIPLA,1d
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/logs/orders` | List order logs (filters supported) |
+| GET | `/api/logs/orders` | Trades, entry/exit events, and summary (filters supported) |
+| GET | `/api/logs/orders/<trade_id>` | Full trade detail incl. every leg request/response |
+| DELETE | `/api/logs/orders/<trade_id>` | Delete one trade log |
+| DELETE | `/api/logs/orders` | Delete trades matching the current filter |
 | POST | `/api/logs/orders` | Record an order |
 | GET | `/api/logs/app` | List app logs |
 | POST | `/api/logs/app` | Record activity |
@@ -340,12 +439,25 @@ SQLite file: `data/symbols.db`
 
 | Table | Purpose |
 |-------|---------|
-| `symbol_settings` | Watchlist: symbol, timeframe, volume_difference, SL%, target% |
-| `scanner_settings` | Scanner: symbol, timeframe, prev_close, prev_close_fetched_at |
-| `strategy_settings` | Single row: times, max trades, timezone, `vwap_enabled`, running/API flags |
-| `trades` | Open/closed trades with optional JSON details |
-| `order_logs` | Order audit trail |
+| `symbol_settings` | Watchlist: symbol, timeframe, volume_difference, SL%, target%, **entry_buffer_pct** |
+| `scanner_settings` | Scanner: symbol, timeframe, volume_difference |
+| `strategy_settings` | Single row: times, max trades, timezone, `vwap_enabled`, `leverage_multiplier`, running/API flags |
+| `trades` | Open/closed trades with a JSON `details` blob |
+| `order_logs` | Order audit trail (entry, legs, cancels, exits) |
 | `app_logs` | User and system activity |
+
+**Useful `trades.details` keys**
+
+| Key | Meaning |
+|-----|---------|
+| `entry_order_id`, `entry_fill_price`, `entry_limit_price`, `entry_order_type` | Broker id, real fill, limit price, and MARKET vs LIMIT |
+| `exit_mode` | `broker` / `hybrid` / `local` |
+| `target_order_id`, `sl_order_id` | Live exit leg ids |
+| `sl_trigger_price`, `sl_limit_price` | SL-L trigger and its limit |
+| `target_leg_request/response`, `sl_leg_request/response` | Raw FYERS payloads |
+| `exit_leg`, `exit_leg_state`, `exit_leg_cancels`, `exit_via` | Which leg executed, its orderbook row, cancellation results |
+| `available_balance`, `leverage_multiplier`, `exposure`, `share_value`, `order_value` | Position sizing audit |
+| `vwap`, `entry_ltp`, `entry_buffer_pct`, `vwap_band_low`, `vwap_band_high` | Session VWAP vs live LTP band at entry |
 
 On first run, if `scanner_settings` is empty and `scanner.csv` exists in the project root, symbols are imported automatically.
 
@@ -353,21 +465,23 @@ On first run, if `scanner_settings` is empty and `scanner.csv` exists in the pro
 
 ## For developers
 
-### Record an order from strategy code
+### Place an order from strategy code
 
 ```python
-from app.order_logger import log_order
+from app import fyers_service
 
-log_order(
-    symbol_name="ACC",
-    side="SELL",
-    order_type="MARKET",
-    quantity=10,
-    status="PLACED",
-    price=1250.5,
-    stop_loss=1.5,
-    target=2.0,
-)
+# Market entry (side: 1 buy, -1 sell)
+fyers_service.place_market_order("ACC", 1, 10)
+
+# Target leg
+fyers_service.place_limit_order("ACC", -1, 10, 1275.0)
+
+# Stop leg (trigger + limit, tick-rounded)
+fyers_service.place_sl_limit_order("ACC", -1, 10, 1225.0, 1223.75)
+
+# Cancel and inspect
+fyers_service.cancel_order("25090200123456")
+fyers_service.fetch_order_states(["25090200123456"])
 ```
 
 ### Check if more trades are allowed today
@@ -383,18 +497,22 @@ if can_take_more_trades():
 
 | Module | Role |
 |--------|------|
-| `app/fyers_service.py` | Login, history, prev close, depth, VWAP, orders, WebSocket |
-| `app/scanner_service.py` | `prepare_prev_closes()`, `get_live_bias()` |
-| `app/strategy_engine.py` | 1s scan loop, scanner filter, entries, SL/target exits |
-| `app/strategy_scheduler.py` | 09:00 login + prev close, auto start/stop |
+| `FyresIntegration.py` | FYERS SDK calls: `build_order_payload`, `place_order_with_meta`, `cancel_order_with_meta`, `orders_by_ids` |
+| `app/fyers_service.py` | Login, history, depth, VWAP, order placement/cancellation/status, tick rounding, WebSocket |
+| `app/scanner_service.py` | `evaluate_depth_signal()`, `majority_threshold()`, `get_live_bias()` |
+| `app/strategy_engine.py` | 1s loop, scanner gate, entries, exit legs, OCO cancellation |
+| `app/strategy_scheduler.py` | 09:00 login, auto start/stop |
 
 ### Console output
 
 Each second while scanning:
 
 ```
-[SCANNER 10:15:01] buy=12 sell=8 flat=0 missing=0 total=20 bias=BUY -> only BUY entries
-[DEPTH 10:15:01] ACC ... signal=BUY vwap cross ...
+[SCANNER 10:15:01] buy=12 sell=8 none=0 missing=0 total=20 majority_need=11 bias=BUY -> only BUY entries
+[DEPTH 10:15:01] ACC ws age=0.3s bid_p=1250.00 ask_p=1250.05 book_buy=30000 book_sell=12000 ... signal=BUY vwap=off
+[EXIT LEGS] ACC entry=1250.00 target=1275.00(PLACED) sl_trigger=1225.00 sl_limit=1223.75(PLACED) mode=broker
+[EXIT LEGS] ACC cancel SL leg 25090200123456: ok after 1 attempt(s)
+[TRADE] ACC BUY entry=... @ 1250.00 exit=... @ 1275.20 reason=TARGET pnl=252.00 (entry=FILLED, exit=FILLED)
 ```
 
 Scanner bias is recomputed **every tick** — not once at open.
@@ -403,6 +521,7 @@ Scanner bias is recomputed **every tick** — not once at open.
 
 - `app/config.py` — `DATABASE_PATH`, `SCANNER_CSV_PATH`
 - `SECRET_KEY` — environment variable for production
+- `app/strategy_engine.py` — `SL_LIMIT_BUFFER_PCT` (SL-L limit offset, default 0.10%), `LEG_CANCEL_ATTEMPTS`, `LEG_POLL_MAX_ERRORS`
 
 ---
 
@@ -410,107 +529,97 @@ Scanner bias is recomputed **every tick** — not once at open.
 
 ### Scan frequency
 
-- Watchlist + scanner bias: every **1 second** while strategy is running and inside the trading window.
+- Watchlist + scanner bias: every **1 second** while the strategy is running and inside the trading window.
 - Scanner UI status: polled every **3 seconds** on `/scanner`.
 
 ### Step 1 — Scanner live bias (continuous)
 
-For each symbol in `scanner_settings`:
+For each symbol in `scanner_settings`, using its own `volume_difference`:
 
-- Compare **current LTP** vs **previous day close** (fetched once per day; static).
-- Count:
-  - **Above:** `LTP > prev_close`
-  - **Below:** `LTP < prev_close`
-  - **Flat:** `LTP == prev_close` (not counted toward either side)
-  - **Missing:** no prev close or no LTP
+```
+buy_diff  = total_bid_qty - total_ask_qty
+sell_diff = total_ask_qty - total_bid_qty
 
-**Allowed trade direction** (re-evaluated every second):
+buy_diff  >= volume_difference  ->  BUY signal
+sell_diff >= volume_difference  ->  SELL signal
+otherwise                       ->  no signal
+```
+
+**Majority** = `floor(n/2) + 1` of all scanner symbols (11 of 20, 6 of 10, 51 of 100).
 
 | Condition | Allowed entries |
 |-----------|-----------------|
-| `above_count > below_count` | **BUY only** on watchlist |
-| `below_count > above_count` | **SELL only** on watchlist |
-| `above_count == below_count` | **None** (neutral — wait) |
+| `buy_count >= majority` | **BUY only** on watchlist |
+| `sell_count >= majority` | **SELL only** on watchlist |
+| neither reaches majority | **None** (wait) |
 
-Works for any scanner size (19, 20, 21, …). Example with 20 symbols: 12 above and 8 below → **BUY only**. If LTP moves later to 9 above / 11 below → switches to **SELL only** on the next tick.
-
-**Prev close fetch timing:**
-
-- Auto at **09:00** login (scheduler)
-- On **Strategy Start**
-- Manual **Refresh prev close** on Scanner page
+Symbols with no depth are counted as missing and never help a side reach the majority.
 
 ### Step 2 — Watchlist market depth (per symbol)
 
-Only symbols whose depth signal **matches** the current scanner bias are considered.
+Only symbols whose depth signal **matches** the current scanner bias are considered. Same formula as above, using the watchlist symbol's own `volume_difference` (e.g. 5000 means the buy side must exceed the sell side by at least 5000).
 
-**BUY (when scanner allows BUY):**
+### Step 3 — VWAP band filter (optional)
+
+Controlled by the **VWAP** checkbox (`vwap_enabled`). When enabled, session VWAP is still calculated from today's candles:
+
+`sum(typical_price × volume) / sum(volume)`
+
+That VWAP is then compared **every second** to the symbol's **live WebSocket LTP**, using the per-symbol **entry buffer %**.
+
+Example: VWAP = 100, entry buffer = 2%
+
+| Signal | Allowed LTP | Rejected |
+|--------|-------------|----------|
+| BUY | **98 to 100** (at or below VWAP, not more than 2% below) | LTP &gt; 100 or LTP &lt; 98 |
+| SELL | **100 to 102** (at or above VWAP, not more than 2% above) | LTP &lt; 100 or LTP &gt; 102 |
+
+When the VWAP switch is off, this gate is skipped entirely. If VWAP or LTP is missing, the entry is skipped.
+
+### Step 4 — Position sizing
 
 ```
-buy_diff = bid_qty - ask_qty
-buy_diff >= volume_difference  →  depth signal BUY
+exposure = available_balance × leverage_multiplier
+quantity = floor(exposure / share_price)
 ```
 
-**SELL (when scanner allows SELL):**
+If the balance cannot fund a single share (or is unavailable), the engine still sends **1 share** so the attempt and the broker's response are logged. Every sizing input is stored on the trade and shown in the order log. On a VWAP limit entry, `share_price` is the limit (band-edge) price.
 
-```
-sell_diff = ask_qty - bid_qty
-sell_diff >= volume_difference  →  depth signal SELL
-```
+### Step 5 — Entry execution
 
-`volume_difference` is the configured **buffer** (e.g. 5000 means buy side must exceed sell side by at least 5000).
+- Among candidates passing scanner + depth + (optional) VWAP, pick the **strongest volume margin**.
+- Re-check depth immediately before ordering.
+- **VWAP off:** send a **market order**, then read its **traded price** from the orderbook.
+- **VWAP on:** send a **limit order** at the far edge of the band (BUY at the low, SELL at the high). The order stays `PENDING` and occupies the one-position slot until it fills, is cancelled, or is rejected. Exit legs are placed only after the fill.
 
-### Step 3 — VWAP filter (optional)
+### Step 6 — Bracket exits
 
-Controlled by **VWAP** checkbox in strategy settings (`vwap_enabled`).
+- Place the **target limit** and **stop-loss SL-L** orders, both full quantity, both opposite to the entry.
+- Poll both order ids every tick; when one fills, cancel the other and confirm the cancellation.
+- Close the trade at the leg's real traded price with reason `TARGET` or `SL`.
+- The position is only released — and the next entry only allowed — once that cleanup is confirmed.
 
-When **enabled**, watchlist symbol must pass VWAP **crossover** on its configured timeframe:
-
-| Signal | Crossover rule |
-|--------|----------------|
-| BUY | Previous-prev candle close &lt; VWAP **and** previous candle close &gt; VWAP |
-| SELL | Previous-prev candle close &gt; VWAP **and** previous candle close &lt; VWAP |
-
-Session VWAP: `sum(typical_price × volume) / sum(volume)` for today’s candles.
-
-When **disabled**, VWAP is skipped entirely.
-
-### Step 4 — Entry selection & execution
-
-- Among watchlist candidates passing scanner + depth + (optional) VWAP, pick the **strongest volume margin**.
-- Re-check depth immediately before order.
-- Place **market order**; record trade with SL/target/TSL from symbol settings.
-
-### Step 5 — Trailing stop loss (TSL)
-
-Per-symbol **TSL (%)** in Symbol Settings. Set **0** for fixed SL only.
-
-- **BUY:** for each `tsl`% price rises above entry, SL moves up by `tsl`% of entry price.
-- **SELL:** for each `tsl`% price falls below entry, SL moves down by `tsl`% of entry price.
-
-Example BUY (entry 100, initial SL 90, TSL 1%): LTP 101 (+1%) → SL 91; LTP 102 (+2%) → SL 92.
-
-Checked every second while the trade is open. Exit on trailed SL or target.
+See [Order flow](#order-flow-entry-and-exits) for the fallback behavior when a leg is rejected or cannot be cancelled.
 
 ### Other conditions
 
 | Rule | Behavior |
 |------|----------|
 | **One open trade** | No new entry while any position is open |
-| **One trade per symbol / day** | No re-entry in a symbol that already had an entry today |
-| **Max trades / day** | Stop new entries when daily cap reached |
+| **Same symbol re-entry** | After a trade exits, the same symbol can be entered again if conditions fire and the daily cap is not reached |
+| **Max trades / day** | Stop new entries when the daily cap is reached |
 | **Trading window** | No entries outside start–stop times |
-| **Stop loss / TSL** | BUY: exit when LTP ≤ SL (SL trails if TSL &gt; 0); SELL: exit when LTP ≥ SL |
-| **Target** | BUY: exit when LTP ≥ target; SELL: exit when LTP ≤ target |
-| **EOD** | Open positions squared off at stop time |
+| **Stop loss** | Broker SL-L leg; locally monitored (`LTP ≤ SL` for BUY, `LTP ≥ SL` for SELL) if the leg is not live |
+| **Target** | Broker limit leg; locally monitored (`LTP ≥ target` for BUY, `LTP ≤ target` for SELL) if the leg is not live |
+| **EOD** | Legs cancelled and open positions squared off at stop time |
 
 ### Scheduler
 
 | Time | Action |
 |------|--------|
-| **09:00 IST** | Auto-login; fetch scanner prev closes |
-| **Start time** | Auto-start strategy (within grace window after start) |
-| **Stop time** | Auto-stop strategy |
+| **09:00 IST** | Auto-login |
+| **Start time** | Auto-start strategy (within a grace window after start time only) |
+| **Stop time** | Auto-stop strategy, cancel legs, square off |
 
 ---
 
@@ -518,8 +627,10 @@ Checked every second while the trade is open. Exit on trailed SL or target.
 
 - Flask dev server is for local use; use a production WSGI server for deployment.
 - Keep `FyersCredentials.csv` out of git.
-- `scanner.csv` in the repo is a template; live list is stored in SQLite after first import.
-- If the server restarts, stale `is_running` in DB is reconciled when the engine status is read.
+- `scanner.csv` in the repo is a template; the live list is stored in SQLite after the first import.
+- If the server restarts, a stale `is_running` in the DB is reconciled when engine status is read, and any open trade's exit legs are resumed from the trade record.
+- Both exit legs are full quantity on the same side. If FYERS applies a fresh-order margin check to the second leg it may be rejected — the trade then runs in `hybrid` mode (visible in the order log). Verify with a small position on the first live run.
+- Exit legs sit at the broker as **DAY** orders. If the app is stopped without a square-off, cancel any leftover legs from the FYERS terminal.
 
 ---
 

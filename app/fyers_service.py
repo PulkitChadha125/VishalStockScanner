@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import threading
 import time
@@ -631,10 +632,192 @@ def get_ltp(symbol_name: str) -> float | None:
         return None
 
 
+# Fyers v3 order types
+ORDER_TYPE_LIMIT = 1
+ORDER_TYPE_MARKET = 2
+ORDER_TYPE_SL_MARKET = 3  # SL-M: trigger only
+ORDER_TYPE_SL_LIMIT = 4  # SL-L: trigger + limit
+
+# Fyers v3 orderbook status codes
+ORDER_STATUS_CANCELLED = 1
+ORDER_STATUS_FILLED = 2
+ORDER_STATUS_TRANSIT = 4
+ORDER_STATUS_REJECTED = 5
+ORDER_STATUS_PENDING = 6
+ORDER_STATUS_EXPIRED = 7
+
+ORDER_STATUS_LABELS = {
+    ORDER_STATUS_CANCELLED: "CANCELLED",
+    ORDER_STATUS_FILLED: "FILLED",
+    ORDER_STATUS_TRANSIT: "TRANSIT",
+    ORDER_STATUS_REJECTED: "REJECTED",
+    ORDER_STATUS_PENDING: "PENDING",
+    ORDER_STATUS_EXPIRED: "EXPIRED",
+}
+
+ORDER_STATUS_DEAD = {
+    ORDER_STATUS_CANCELLED,
+    ORDER_STATUS_REJECTED,
+    ORDER_STATUS_EXPIRED,
+}
+
+TICK_SIZE = 0.05
+
+
+def round_to_tick(price: float, mode: str = "nearest") -> float:
+    """Fyers rejects prices that are not a multiple of the ₹0.05 tick."""
+    value = float(price) / TICK_SIZE
+    if mode == "down":
+        ticks = math.floor(value)
+    elif mode == "up":
+        ticks = math.ceil(value)
+    else:
+        ticks = math.floor(value + 0.5)
+    return round(max(ticks, 1) * TICK_SIZE, 2)
+
+
 def place_market_order(symbol_name: str, side: int, quantity: int = 1) -> dict:
     """side: 1 buy, -1 sell. order type 2 = market. Returns request + response."""
     sym = to_fyers_symbol(symbol_name)
-    return fyi.place_order_with_meta(sym, quantity, 2, side, 0)
+    return fyi.place_order_with_meta(sym, quantity, ORDER_TYPE_MARKET, side, 0)
+
+
+def place_limit_order(
+    symbol_name: str,
+    side: int,
+    quantity: int,
+    limit_price: float,
+    order_tag: str = "target",
+) -> dict:
+    """Plain limit order (type 1) — VWAP entries and the target leg."""
+    sym = to_fyers_symbol(symbol_name)
+    return fyi.place_order_with_meta(
+        sym,
+        quantity,
+        ORDER_TYPE_LIMIT,
+        side,
+        round_to_tick(limit_price),
+        0,
+        order_tag,
+    )
+
+
+def place_sl_limit_order(
+    symbol_name: str,
+    side: int,
+    quantity: int,
+    trigger_price: float,
+    limit_price: float,
+    order_tag: str = "stoploss",
+) -> dict:
+    """
+    SL-L order (type 4) — used for the stop loss leg.
+    Fyers rule: sell needs limitPrice <= stopPrice, buy needs limitPrice >= stopPrice.
+    """
+    sym = to_fyers_symbol(symbol_name)
+    return fyi.place_order_with_meta(
+        sym,
+        quantity,
+        ORDER_TYPE_SL_LIMIT,
+        side,
+        round_to_tick(limit_price),
+        round_to_tick(trigger_price),
+        order_tag,
+    )
+
+
+def cancel_order(order_id: str) -> dict:
+    """Cancel a pending order. Returns request + response for order logs."""
+    if not order_id:
+        return {
+            "request": None,
+            "response": {"s": "error", "message": "No order id"},
+        }
+    if not is_connected():
+        return {
+            "request": {"id": str(order_id)},
+            "response": {"s": "error", "message": "Fyers not connected"},
+        }
+    try:
+        return fyi.cancel_order_with_meta(order_id)
+    except Exception as e:
+        return {
+            "request": {"id": str(order_id)},
+            "response": {"s": "error", "message": str(e)},
+        }
+
+
+def extract_order_id(response: dict | None) -> str | None:
+    if not isinstance(response, dict):
+        return None
+    order_id = response.get("id") or response.get("orderNumber")
+    return str(order_id) if order_id else None
+
+
+def _normalize_order_row(row: dict) -> dict:
+    status = row.get("status")
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        status = 0
+
+    traded_price = row.get("tradedPrice")
+    try:
+        traded_price = float(traded_price) if traded_price else None
+    except (TypeError, ValueError):
+        traded_price = None
+
+    def _num(key: str) -> float:
+        try:
+            return float(row.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return {
+        "id": str(row.get("id") or ""),
+        "status": status,
+        "status_label": ORDER_STATUS_LABELS.get(status, f"UNKNOWN_{status}"),
+        "filled_qty": _num("filledQty"),
+        "remaining_qty": _num("remainingQuantity"),
+        "qty": _num("qty"),
+        "traded_price": traded_price if traded_price else None,
+        "limit_price": _num("limitPrice"),
+        "stop_price": _num("stopPrice"),
+        "order_type": row.get("type"),
+        "message": row.get("message"),
+    }
+
+
+def fetch_order_states(order_ids: list[str]) -> dict[str, Any]:
+    """
+    Look up specific orders in the Fyers orderbook.
+    Returns {"error": ...} or {"orders": {order_id: normalized_row}}.
+    """
+    ids = [str(o) for o in order_ids if o]
+    if not ids:
+        return {"orders": {}}
+    if not is_connected():
+        return {"error": "not_connected", "orders": {}}
+
+    try:
+        meta = fyi.orders_by_ids(ids)
+    except Exception as e:
+        return {"error": str(e), "orders": {}}
+
+    response = meta.get("response")
+    if not isinstance(response, dict) or response.get("s") != "ok":
+        return {"error": response, "orders": {}, "request": meta.get("request")}
+
+    book = response.get("orderBook") or response.get("orderbook") or []
+    orders: dict[str, dict] = {}
+    if isinstance(book, list):
+        for row in book:
+            if isinstance(row, dict):
+                normalized = _normalize_order_row(row)
+                if normalized["id"]:
+                    orders[normalized["id"]] = normalized
+
+    return {"orders": orders, "request": meta.get("request"), "response": response}
 
 
 def is_order_successful(response: dict | None) -> bool:
@@ -668,7 +851,7 @@ def _summarize_history_response(response: dict | None) -> dict | None:
 
 
 def _session_candles_df(df) -> pd.DataFrame:
-    """Today's intraday candles used for session VWAP and crossover checks."""
+    """Today's intraday candles used for session VWAP."""
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -948,68 +1131,90 @@ def get_vwap(symbol_name: str, time_frame: str) -> float | None:
     return meta.get("vwap") if meta else None
 
 
-def _vwap_crossover_from_closes(
+def vwap_band_prices(vwap: float, buffer_pct: float) -> tuple[float, float]:
+    """Lower/upper prices for the entry buffer around session VWAP."""
+    value = float(vwap)
+    buffer = max(float(buffer_pct or 0), 0.0)
+    low = value * (1 - buffer / 100.0)
+    high = value * (1 + buffer / 100.0)
+    return low, high
+
+
+def passes_vwap_band_filter(
     signal: str,
-    vwap: float,
-    prev_prev_close: float,
-    prev_close: float,
+    vwap: float | None,
+    ltp: float | None,
+    buffer_pct: float,
 ) -> tuple[bool, str, dict]:
+    """
+    Live LTP vs session VWAP band. Checked every engine tick.
+
+    BUY:  VWAP * (1 - buffer%) <= LTP <= VWAP
+    SELL: VWAP <= LTP <= VWAP * (1 + buffer%)
+
+    Example: VWAP 100, buffer 2% -> BUY 98–100, SELL 100–102.
+    """
+    if vwap is None:
+        return False, "VWAP unavailable", {}
+    try:
+        vwap_f = float(vwap)
+    except (TypeError, ValueError):
+        return False, "VWAP unavailable", {}
+    if vwap_f <= 0:
+        return False, "VWAP unavailable", {}
+
+    if ltp is None:
+        return False, "LTP unavailable", {"vwap": vwap_f}
+    try:
+        ltp_f = float(ltp)
+    except (TypeError, ValueError):
+        return False, "LTP unavailable", {"vwap": vwap_f}
+    if ltp_f <= 0:
+        return False, "LTP unavailable", {"vwap": vwap_f}
+
+    low, high = vwap_band_prices(vwap_f, buffer_pct)
     details = {
-        "vwap": vwap,
-        "prev_prev_close": prev_prev_close,
-        "prev_close": prev_close,
+        "vwap": vwap_f,
+        "ltp": ltp_f,
+        "entry_buffer_pct": float(buffer_pct or 0),
+        "vwap_band_low": low,
+        "vwap_band_high": high,
     }
     if signal == "BUY":
-        if prev_prev_close < vwap and prev_close > vwap:
-            details["crossover"] = "up"
+        details["band_side"] = "buy"
+        if low <= ltp_f <= vwap_f:
+            details["vwap_band_passed"] = True
             return True, "", details
         return (
             False,
             (
-                f"BUY blocked: no upward VWAP crossover "
-                f"(prev_prev_close={prev_prev_close:.2f} "
-                f"prev_close={prev_close:.2f} vwap={vwap:.2f})"
+                f"BUY blocked: LTP {ltp_f:.2f} outside VWAP band "
+                f"{low:.2f}–{vwap_f:.2f} (vwap={vwap_f:.2f})"
             ),
             details,
         )
     if signal == "SELL":
-        if prev_prev_close > vwap and prev_close < vwap:
-            details["crossover"] = "down"
+        details["band_side"] = "sell"
+        if vwap_f <= ltp_f <= high:
+            details["vwap_band_passed"] = True
             return True, "", details
         return (
             False,
             (
-                f"SELL blocked: no downward VWAP crossover "
-                f"(prev_prev_close={prev_prev_close:.2f} "
-                f"prev_close={prev_close:.2f} vwap={vwap:.2f})"
+                f"SELL blocked: LTP {ltp_f:.2f} outside VWAP band "
+                f"{vwap_f:.2f}–{high:.2f} (vwap={vwap_f:.2f})"
             ),
             details,
         )
     return False, "Unknown signal", details
 
 
-def passes_vwap_crossover_filter(
-    signal: str, vwap_meta: dict, time_frame: str
-) -> tuple[bool, str, dict]:
+def vwap_entry_limit_price(signal: str, vwap: float, buffer_pct: float) -> float:
     """
-    Entry filter using VWAP crossover on the last two completed candles.
-
-    BUY:  prev_prev close < VWAP and prev close > VWAP (upward cross).
-    SELL: prev_prev close > VWAP and prev close < VWAP (downward cross).
+    Limit entry at the far edge of the VWAP band.
+    BUY -> band low (e.g. 98). SELL -> band high (e.g. 102).
     """
-    vwap = vwap_meta.get("vwap")
-    if vwap is None:
-        return False, "VWAP unavailable", {}
-
-    df = vwap_meta.get("df")
-    if df is not None:
-        closes = get_last_two_completed_closes(df, time_frame)
-        if closes is None:
-            return False, "VWAP crossover: need at least 2 completed candles", {}
-        return _vwap_crossover_from_closes(signal, vwap, closes[0], closes[1])
-
-    prev_prev = vwap_meta.get("prev_prev_close")
-    prev = vwap_meta.get("prev_close")
-    if prev_prev is None or prev is None:
-        return False, "VWAP crossover: need at least 2 completed candles", {}
-    return _vwap_crossover_from_closes(signal, vwap, prev_prev, prev)
+    low, high = vwap_band_prices(vwap, buffer_pct)
+    if signal == "BUY":
+        return round_to_tick(low, "down")
+    return round_to_tick(high, "up")

@@ -100,19 +100,23 @@
     </header>
     <div class="modal__body trade-detail">
       <section class="trade-detail__section">
-        <h3 class="trade-detail__section-title">Candle closes &amp; VWAP</h3>
+        <h3 class="trade-detail__section-title">VWAP band</h3>
         <div class="trade-detail__grid">
-          <div class="trade-detail__item">
-            <span class="trade-detail__label">Previous-to-previous close</span>
-            <span class="trade-detail__value" id="detail-prev-prev-close">—</span>
-          </div>
-          <div class="trade-detail__item">
-            <span class="trade-detail__label">Previous close</span>
-            <span class="trade-detail__value" id="detail-prev-close">—</span>
-          </div>
           <div class="trade-detail__item">
             <span class="trade-detail__label">VWAP <span class="trade-detail__hint" id="detail-vwap-tf"></span></span>
             <span class="trade-detail__value" id="detail-vwap">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">LTP at entry</span>
+            <span class="trade-detail__value" id="detail-entry-ltp">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Entry buffer</span>
+            <span class="trade-detail__value" id="detail-entry-buffer">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Allowed band</span>
+            <span class="trade-detail__value" id="detail-vwap-band">—</span>
           </div>
         </div>
       </section>
@@ -153,6 +157,14 @@
           <div class="trade-detail__item">
             <span class="trade-detail__label">Entry price</span>
             <span class="trade-detail__value" id="detail-entry-price">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Entry type</span>
+            <span class="trade-detail__value" id="detail-entry-order-type">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Limit price</span>
+            <span class="trade-detail__value" id="detail-entry-limit">—</span>
           </div>
           <div class="trade-detail__item">
             <span class="trade-detail__label">Stop loss</span>
@@ -198,6 +210,56 @@
             <span class="trade-detail__label">Total sell qty</span>
             <span class="trade-detail__value trade-detail__value--sell" id="detail-book-sell">—</span>
           </div>
+        </div>
+      </section>
+
+      <section class="trade-detail__section" id="detail-legs-section" hidden>
+        <h3 class="trade-detail__section-title">Exit orders at broker</h3>
+        <div class="trade-detail__grid">
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Exit mode</span>
+            <span class="trade-detail__value" id="detail-exit-mode">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Executed leg</span>
+            <span class="trade-detail__value" id="detail-exit-leg">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Target order (LIMIT)</span>
+            <span class="trade-detail__value" id="detail-target-order-id">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Stop loss order (SL-L)</span>
+            <span class="trade-detail__value" id="detail-sl-order-id">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">SL trigger / limit</span>
+            <span class="trade-detail__value" id="detail-sl-prices">—</span>
+          </div>
+          <div class="trade-detail__item">
+            <span class="trade-detail__label">Entry fill price</span>
+            <span class="trade-detail__value" id="detail-entry-fill">—</span>
+          </div>
+        </div>
+        <div class="json-block">
+          <h4 class="json-block__title">Target leg request</h4>
+          <pre class="json-block__code" id="detail-target-leg-request">—</pre>
+        </div>
+        <div class="json-block">
+          <h4 class="json-block__title">Target leg response</h4>
+          <pre class="json-block__code" id="detail-target-leg-response">—</pre>
+        </div>
+        <div class="json-block">
+          <h4 class="json-block__title">Stop loss leg request</h4>
+          <pre class="json-block__code" id="detail-sl-leg-request">—</pre>
+        </div>
+        <div class="json-block">
+          <h4 class="json-block__title">Stop loss leg response</h4>
+          <pre class="json-block__code" id="detail-sl-leg-response">—</pre>
+        </div>
+        <div class="json-block" id="detail-leg-cancels-wrap" hidden>
+          <h4 class="json-block__title">Leg cancellation</h4>
+          <pre class="json-block__code" id="detail-leg-cancels">—</pre>
         </div>
       </section>
 

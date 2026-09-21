@@ -44,15 +44,24 @@ def create_symbol(
     stop_loss_pct: float,
     target_pct: float,
     tsl: float = 0,
+    entry_buffer_pct: float = 2,
 ) -> dict:
     with get_connection() as conn:
         cur = conn.execute(
             """
             INSERT INTO symbol_settings
-                (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, tsl)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, tsl, entry_buffer_pct)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, tsl),
+            (
+                symbol_name,
+                time_frame,
+                volume_difference,
+                stop_loss_pct,
+                target_pct,
+                tsl,
+                entry_buffer_pct,
+            ),
         )
         conn.commit()
         symbol_id = cur.lastrowid
@@ -67,13 +76,14 @@ def update_symbol(
     stop_loss_pct: float,
     target_pct: float,
     tsl: float = 0,
+    entry_buffer_pct: float = 2,
 ) -> dict | None:
     with get_connection() as conn:
         cur = conn.execute(
             """
             UPDATE symbol_settings
             SET symbol_name = ?, time_frame = ?, volume_difference = ?,
-                stop_loss_pct = ?, target_pct = ?, tsl = ?
+                stop_loss_pct = ?, target_pct = ?, tsl = ?, entry_buffer_pct = ?
             WHERE id = ?
             """,
             (
@@ -83,6 +93,7 @@ def update_symbol(
                 stop_loss_pct,
                 target_pct,
                 tsl,
+                entry_buffer_pct,
                 symbol_id,
             ),
         )
@@ -110,8 +121,8 @@ def replace_all_symbols(rows: list[dict]) -> list[dict]:
             conn.execute(
                 """
                 INSERT INTO symbol_settings
-                    (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, tsl)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, tsl, entry_buffer_pct)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["symbol_name"],
@@ -120,6 +131,7 @@ def replace_all_symbols(rows: list[dict]) -> list[dict]:
                     row["stop_loss_pct"],
                     row["target_pct"],
                     row.get("tsl", 0),
+                    float(row.get("entry_buffer_pct", 2) or 2),
                 ),
             )
         conn.commit()
@@ -315,6 +327,7 @@ def trades_to_log_events(trades: list[dict]) -> list[dict]:
                 "quantity": trade["quantity"],
                 "price": trade["entry_price"],
                 "status": trade["entry_status"],
+                "order_type": trade.get("entry_order_type") or "MARKET",
                 "exit_reason": None,
                 "stop_loss": trade["stop_loss"],
                 "target": trade["target"],
@@ -559,6 +572,37 @@ def merge_trade_details(trade_id: int, updates: dict) -> dict | None:
     return trade_row_to_dict(updated) if updated else None
 
 
+def update_trade_levels(
+    trade_id: int,
+    stop_loss: float,
+    target: float,
+    entry_price: float | None = None,
+    entry_status: str | None = None,
+) -> dict | None:
+    """Re-align SL/target (and entry) once the broker reports the real fill price."""
+    with get_connection() as conn:
+        assignments = ["stop_loss = ?", "target = ?"]
+        params: list = [stop_loss, target]
+        if entry_price is not None:
+            assignments.append("entry_price = ?")
+            params.append(entry_price)
+        if entry_status is not None:
+            assignments.append("entry_status = ?")
+            params.append(entry_status.upper())
+        params.extend([trade_id])
+        conn.execute(
+            f"""
+            UPDATE trades
+            SET {", ".join(assignments)}
+            WHERE id = ? AND exit_time IS NULL
+            """,
+            params,
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    return trade_row_to_dict(row) if row else None
+
+
 def find_entry_app_log_for_trade(trade: dict) -> dict | None:
     symbol = trade.get("symbol_name")
     entry_time = trade.get("entry_time")
@@ -775,12 +819,13 @@ def get_strategy_settings() -> dict:
 
 
 def count_trades_today() -> int:
-    """Strategy entries opened today (includes broker-rejected paper trades)."""
+    """Strategy entries opened today (excludes unfilled/rejected limits)."""
     with get_connection() as conn:
         row = conn.execute(
             """
             SELECT COUNT(*) AS cnt FROM trades
             WHERE date(entry_time) = date(?)
+              AND COALESCE(exit_reason, '') NOT IN ('UNFILLED', 'REJECTED')
             """,
             (market_tz.today_key_ist(),),
         ).fetchone()

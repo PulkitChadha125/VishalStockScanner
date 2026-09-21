@@ -736,14 +736,19 @@ def stop_option_websocket(clear_ltp: bool = True):
 
 
 
-def build_order_payload(symbol, quantity, type, side, price):
+def build_order_payload(
+    symbol, quantity, type, side, price, stop_price=0, order_tag="tag1"
+):
     if quantity is None or quantity == 0:
         quantity = 1
     quantity = int(quantity)
     price = float(price)
+    stop_price = float(stop_price or 0)
     order_type = int(type)
     order_side = int(side)
-    limit_price = 0 if order_type == 2 else price
+    # Market (2) and SL-M (3) carry no limit price; SL-M (3) and SL-L (4) carry a trigger.
+    limit_price = 0 if order_type in (2, 3) else price
+    trigger_price = stop_price if order_type in (3, 4) else 0
     return {
         "symbol": symbol,
         "qty": quantity,
@@ -751,13 +756,13 @@ def build_order_payload(symbol, quantity, type, side, price):
         "side": order_side,
         "productType": "INTRADAY",
         "limitPrice": limit_price,
-        "stopPrice": 0,
+        "stopPrice": trigger_price,
         "validity": "DAY",
         "disclosedQty": 0,
         "offlineOrder": False,
         "stopLoss": 0,
         "takeProfit": 0,
-        "orderTag": "tag1",
+        "orderTag": order_tag,
     }
 
 
@@ -780,12 +785,39 @@ def _execute_order(data):
     return response
 
 
-def place_order(symbol, quantity, type, side, price):
-    data = build_order_payload(symbol, quantity, type, side, price)
+def place_order(symbol, quantity, type, side, price, stop_price=0):
+    data = build_order_payload(symbol, quantity, type, side, price, stop_price)
     return _execute_order(data)
 
 
-def place_order_with_meta(symbol, quantity, type, side, price):
-    data = build_order_payload(symbol, quantity, type, side, price)
+def place_order_with_meta(
+    symbol, quantity, type, side, price, stop_price=0, order_tag="tag1"
+):
+    data = build_order_payload(
+        symbol, quantity, type, side, price, stop_price, order_tag
+    )
     return {"request": data, "response": _execute_order(data)}
+
+
+def cancel_order_with_meta(order_id):
+    """Cancel a pending order by Fyers order id. Success response code is 1103."""
+    data = {"id": str(order_id)}
+    print("Cancel order:", data)
+    try:
+        response = fyers.cancel_order(data=data)
+    except Exception as e:
+        response = {"s": "error", "message": str(e)}
+    print("Cancel response:", response)
+    return {"request": data, "response": response}
+
+
+def orders_by_ids(order_ids):
+    """Orderbook filtered to specific order ids (comma separated per Fyers v3)."""
+    ids = ",".join(str(o) for o in order_ids if o)
+    data = {"id": ids}
+    try:
+        response = fyers.orderbook(data=data)
+    except Exception as e:
+        response = {"s": "error", "message": str(e)}
+    return {"request": data, "response": response}
 

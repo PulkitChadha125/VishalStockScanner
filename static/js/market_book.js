@@ -76,9 +76,6 @@
 
   function vwapBadge(row) {
     if (!row.signal) return '<span class="book-signal book-signal--none">—</span>';
-    if (row.traded_today) {
-      return '<span class="book-signal book-signal--none" title="Already traded today — one entry per symbol per day">DONE TODAY</span>';
-    }
     if (row.trade_ready) {
       const cls = row.vwap_signal === "BUY" ? "book-signal--buy" : "book-signal--sell";
       return `<span class="book-signal ${cls} book-signal--ready" title="Strategy will enter this trade">READY ${escapeHtml(row.vwap_signal)}</span>`;

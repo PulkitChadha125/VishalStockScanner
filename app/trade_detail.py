@@ -31,13 +31,12 @@ def enrich_trade_for_display(trade: dict, persist: bool = True) -> dict:
         if enriched.get("volume_difference") is None:
             enriched["volume_difference"] = sym["volume_difference"]
             updates["volume_difference"] = sym["volume_difference"]
+        if enriched.get("entry_buffer_pct") is None and sym.get("entry_buffer_pct") is not None:
+            enriched["entry_buffer_pct"] = sym["entry_buffer_pct"]
+            updates["entry_buffer_pct"] = sym["entry_buffer_pct"]
 
     vwap_meta = None
-    if (
-        enriched.get("vwap") is None
-        or enriched.get("prev_prev_close") is None
-        or enriched.get("prev_close") is None
-    ):
+    if enriched.get("vwap") is None:
         vwap_meta = fyers_service.get_vwap_with_meta(
             trade["symbol_name"], time_frame
         )
@@ -47,16 +46,6 @@ def enrich_trade_for_display(trade: dict, persist: bool = True) -> dict:
             enriched["vwap"] = vwap_meta["vwap"]
             updates["vwap"] = vwap_meta["vwap"]
             updates["time_frame"] = time_frame
-        if enriched.get("prev_prev_close") is None:
-            prev_prev = vwap_meta.get("prev_prev_close")
-            if prev_prev is not None:
-                enriched["prev_prev_close"] = prev_prev
-                updates["prev_prev_close"] = prev_prev
-        if enriched.get("prev_close") is None:
-            prev = vwap_meta.get("prev_close")
-            if prev is not None:
-                enriched["prev_close"] = prev
-                updates["prev_close"] = prev
         if vwap_meta.get("request") and enriched.get("vwap_api_request") is None:
             enriched["vwap_api_request"] = vwap_meta["request"]
             updates["vwap_api_request"] = vwap_meta["request"]
