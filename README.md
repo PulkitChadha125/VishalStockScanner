@@ -63,7 +63,7 @@ Each second during the trading window, the engine:
 - Background strategy engine (1-second scan loop)
 - Depth-based scanner majority gate
 - Exposure-based position sizing
-- Limit entry at the **live LTP** (VWAP band is only the gate, not the order price)
+- Limit entry at the **live ask (BUY) / bid (SELL)** once LTP is inside the VWAP band
 - Bracket exit orders (target limit / stop-loss SL-L) with OCO cancellation
 - Auto scheduler (login / start / stop)
 - WebSocket + REST market depth and LTP
@@ -78,7 +78,7 @@ Confirmed against the FYERS v3 API (`type`: `1` Limit · `2` Market · `3` SL-M 
 
 | Purpose | FYERS type | Payload |
 |---------|-----------|---------|
-| Entry | `1` Limit | `limitPrice` = live LTP (the price trading now), not a hardcoded band edge |
+| Entry | `1` Limit | `limitPrice` = live **ask** on BUY, live **bid** on SELL |
 | Target | `1` Limit | `limitPrice` = target price |
 | Stop loss | `4` SL-L | `stopPrice` = stop price, `limitPrice` = stop ± buffer |
 
@@ -88,7 +88,7 @@ The target **cannot** be a stop order: FYERS requires a sell trigger to sit **be
 
 | Step | Order sent |
 |------|-----------|
-| 1. Entry | BUY **limit** at the live LTP (e.g. 99.00 if that is the running price) |
+| 1. Entry | BUY **limit** at the live ask (the price sellers are offering right now) |
 | 2. Target leg | SELL **limit** @ **102.00** |
 | 3. Stop leg | SELL **SL-L**, trigger **98.00**, limit **97.90** |
 | 4. One fills | Say target trades at 102.05 → the SL order is cancelled |
@@ -98,9 +98,12 @@ For a SELL entry the legs mirror: BUY limit at the target below entry, BUY SL-L 
 
 ### VWAP band is the gate; the limit uses the live price
 
-The 98–100 / 100–102 band only decides **whether** to send an order. The order itself is a **limit at the live LTP** (the price running in the market right then), not 98 or 102.
+The 98–100 / 100–102 band only decides **whether** to send an order (using live LTP). The order itself is a **limit at the live book**:
 
-Example: VWAP = 100, buffer 2%, live LTP = 99 → BUY is allowed, limit is sent at **99**.
+- BUY → current **ask**
+- SELL → current **bid**
+
+Example: VWAP = 100, LTP = 99 (inside the buy band), ask = 99.20 → BUY limit at **99.20**.
 
 If LTP leaves the band before that limit fills, the resting order is cancelled — no market flatten and no P&amp;L.
 
@@ -579,13 +582,13 @@ exposure = available_balance × leverage_multiplier
 quantity = floor(exposure / share_price)
 ```
 
-If the balance cannot fund a single share (or is unavailable), the engine still sends **1 share** so the attempt and the broker's response are logged. Every sizing input is stored on the trade and shown in the order log. `share_price` is the live limit price (LTP).
+If the balance cannot fund a single share (or is unavailable), the engine still sends **1 share** so the attempt and the broker's response are logged. Every sizing input is stored on the trade and shown in the order log. `share_price` is the live ask (BUY) or bid (SELL).
 
 ### Step 5 — Entry execution
 
 - Among candidates passing scanner + depth + (optional) VWAP, pick the **strongest volume margin**.
 - Re-check depth immediately before ordering.
-- Send a **limit order at the live LTP** (FYERS type 1). The band is only a filter; 98/102 are never hardcoded as the order price.
+- Send a **limit order at the live ask (BUY) or live bid (SELL)**. The VWAP band is only a filter; 98/102 are never the order price.
 - The order stays `PENDING` and occupies the one-position slot until it fills, is cancelled, or is rejected. Exit legs are placed only after the fill.
 
 ### Step 6 — Bracket exits

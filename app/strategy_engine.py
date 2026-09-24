@@ -573,10 +573,13 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
     if live_ltp is None and crossover:
         live_ltp = crossover.get("ltp")
     limit_price = fyers_service.live_entry_limit_price(
-        live_ltp, depth.get("bid_price"), depth.get("ask_price")
+        signal,
+        depth.get("bid_price"),
+        depth.get("ask_price"),
+        live_ltp,
     )
     if not limit_price:
-        _log_app(f"Entry skipped — no live price for {symbol['symbol_name']}")
+        _log_app(f"Entry skipped — no live ask/bid for {symbol['symbol_name']}")
         return
     entry_price = limit_price
 

@@ -1210,15 +1210,18 @@ def passes_vwap_band_filter(
 
 
 def live_entry_limit_price(
-    ltp: float | None,
+    signal: str,
     bid_price: float | None = None,
     ask_price: float | None = None,
+    ltp: float | None = None,
 ) -> float | None:
     """
-    Limit at the price currently trading — not a hardcoded band edge.
-    Prefers live LTP, then ask, then bid. Rounded to the ₹0.05 tick.
+    Limit at the live book price for that side.
+    BUY → current ask. SELL → current bid.
+    Falls back to LTP only if that book price is missing.
     """
-    for value in (ltp, ask_price, bid_price):
+    preferred = ask_price if signal == "BUY" else bid_price
+    for value in (preferred, ltp):
         if value is None:
             continue
         try:

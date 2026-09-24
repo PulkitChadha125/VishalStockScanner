@@ -330,8 +330,16 @@ def test_vwap_band_math() -> None:
     low, high = fyers_service.vwap_band_prices(100, 2)
     check("band low is 2% below VWAP", round(low, 2), 98.0)
     check("band high is 2% above VWAP", round(high, 2), 102.0)
-    check("live limit uses LTP", fyers_service.live_entry_limit_price(99.0), 99.0)
-    check("live limit falls back to ask", fyers_service.live_entry_limit_price(None, 98.5, 99.1), 99.1)
+    check(
+        "buy limit uses the live ask",
+        fyers_service.live_entry_limit_price("BUY", 98.5, 99.15, 99.0),
+        99.15,
+    )
+    check(
+        "sell limit uses the live bid",
+        fyers_service.live_entry_limit_price("SELL", 98.5, 99.15, 101.0),
+        98.5,
+    )
 
     ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 99, 2)
     check("buy inside band", ok, True)
@@ -374,7 +382,7 @@ def test_vwap_band_math() -> None:
 
 
 def test_vwap_band_gate_on_tick() -> None:
-    section("VWAP-on entries are limits at the live LTP")
+    section("VWAP-on entries are limits at live ask (buy) / bid (sell)")
     orig = fyers_service.get_vwap_with_meta
     fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
     turn_vwap(True)
@@ -389,11 +397,11 @@ def test_vwap_band_gate_on_tick() -> None:
     se._tick()
     entries = BROKER.legs("LIMIT", "entry")
     check("buy limit sent when LTP is in 98-100", len(entries), 1)
-    check("buy limit price is the live LTP", entries[0]["limit_price"], 99.0)
+    check("buy limit price is the live ask", entries[0]["limit_price"], 100.15)
     check("buy limit is a buy", entries[0]["side"], 1)
     check("no market entry on VWAP path", len(BROKER.legs("MARKET")), 0)
     check("exit legs wait for the fill", len(BROKER.legs("SL-L")), 0)
-    check("qty sized off the live LTP", entries[0]["qty"], int(10_000 * 5 / 99.0))
+    check("qty sized off the live ask", entries[0]["qty"], int(10_000 * 5 / 100.15))
     trade = repository.get_open_trade()
     check("pending trade occupies the slot", trade["entry_status"], "PENDING")
 
@@ -415,7 +423,7 @@ def test_vwap_band_gate_on_tick() -> None:
 
 
 def test_vwap_sell_limit_at_band_high() -> None:
-    section("VWAP sell limit sits at the live LTP")
+    section("VWAP sell limit sits at the live bid")
     orig = fyers_service.get_vwap_with_meta
     fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
     turn_vwap(True)
@@ -425,7 +433,7 @@ def test_vwap_sell_limit_at_band_high() -> None:
     se._tick()
     entries = BROKER.legs("LIMIT", "entry")
     check("sell limit sent when LTP is in 100-102", len(entries), 1)
-    check("sell limit price is the live LTP", entries[0]["limit_price"], 101.0)
+    check("sell limit price is the live bid", entries[0]["limit_price"], 100.05)
     check("sell limit is a sell", entries[0]["side"], -1)
     check("no market sell on VWAP path", len(BROKER.legs("MARKET")), 0)
 
@@ -536,8 +544,8 @@ def test_buy_target_hit(app):
     check("target leg placed", len(target), 1)
     check("sl leg placed", len(stop), 1)
 
-    # 10,000 balance x 5 leverage / 100.10 ask = 499 shares
-    expected_qty = int(10_000 * 5 / 100.10)
+    # 10,000 balance x 5 leverage / 100.15 live ask = 499 shares
+    expected_qty = int(10_000 * 5 / 100.15)
     check("exposure-based quantity", entry[0]["qty"], expected_qty)
     check("legs use same quantity", target[0]["qty"], expected_qty)
 
