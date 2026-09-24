@@ -110,10 +110,12 @@
       <div>
         <h2 class="market-book__title">Live order book totals</h2>
         <p class="market-book__subtitle">
-          Total buy vs sell quantity during your session hours (
-          <span id="market-book-hours">—</span>
-          ). Live LTP must sit in the VWAP band for a trade — strategy must show <strong>Running</strong>.
+          All three must pass on the same tick: scanner majority, watchlist
+          depth (buy/sell qty vs volume diff), then VWAP band if the switch
+          is on. Session hours
+          <span id="market-book-hours">—</span>.
         </p>
+        <p class="market-book__scanner" id="market-book-scanner">Scanner: —</p>
       </div>
       <span class="market-book__updated" id="market-book-updated">—</span>
     </header>

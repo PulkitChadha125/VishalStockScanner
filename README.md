@@ -63,7 +63,7 @@ Each second during the trading window, the engine:
 - Background strategy engine (1-second scan loop)
 - Depth-based scanner majority gate
 - Exposure-based position sizing
-- Market entry when VWAP is off; **limit entry at the VWAP band edge** when VWAP is on
+- Limit entry at the **live LTP** (VWAP band is only the gate, not the order price)
 - Bracket exit orders (target limit / stop-loss SL-L) with OCO cancellation
 - Auto scheduler (login / start / stop)
 - WebSocket + REST market depth and LTP
@@ -78,8 +78,7 @@ Confirmed against the FYERS v3 API (`type`: `1` Limit · `2` Market · `3` SL-M 
 
 | Purpose | FYERS type | Payload |
 |---------|-----------|---------|
-| Entry (VWAP **off**) | `2` Market | `limitPrice: 0`, `stopPrice: 0` |
-| Entry (VWAP **on**) | `1` Limit | `limitPrice` = far edge of the VWAP band (BUY = band low, SELL = band high) |
+| Entry | `1` Limit | `limitPrice` = live LTP (the price trading now), not a hardcoded band edge |
 | Target | `1` Limit | `limitPrice` = target price |
 | Stop loss | `4` SL-L | `stopPrice` = stop price, `limitPrice` = stop ± buffer |
 
@@ -89,7 +88,7 @@ The target **cannot** be a stop order: FYERS requires a sell trigger to sit **be
 
 | Step | Order sent |
 |------|-----------|
-| 1. Entry | BUY market, quantity from exposure sizing → fills at 100.00 |
+| 1. Entry | BUY **limit** at the live LTP (e.g. 99.00 if that is the running price) |
 | 2. Target leg | SELL **limit** @ **102.00** |
 | 3. Stop leg | SELL **SL-L**, trigger **98.00**, limit **97.90** |
 | 4. One fills | Say target trades at 102.05 → the SL order is cancelled |
@@ -97,16 +96,13 @@ The target **cannot** be a stop order: FYERS requires a sell trigger to sit **be
 
 For a SELL entry the legs mirror: BUY limit at the target below entry, BUY SL-L with trigger above entry and `limitPrice` above the trigger.
 
-### VWAP-on limit entry (VWAP 100, buffer 2%)
+### VWAP band is the gate; the limit uses the live price
 
-When LTP is inside the band the engine does **not** send a market order. It parks a limit at the far edge and waits for a fill:
+The 98–100 / 100–102 band only decides **whether** to send an order. The order itself is a **limit at the live LTP** (the price running in the market right then), not 98 or 102.
 
-| Signal | Allowed LTP | Limit price |
-|--------|-------------|-------------|
-| BUY | 98 to 100 | **98** |
-| SELL | 100 to 102 | **102** |
+Example: VWAP = 100, buffer 2%, live LTP = 99 → BUY is allowed, limit is sent at **99**.
 
-Quantity is sized off that limit price. Exit legs are placed only after the limit fills. If LTP leaves the band (or the session stops) before a fill, the resting limit is cancelled — there is no market flatten and no P&amp;L, because no shares were bought or sold.
+If LTP leaves the band before that limit fills, the resting order is cancelled — no market flatten and no P&amp;L.
 
 ### Levels come from the real fill
 
@@ -583,14 +579,14 @@ exposure = available_balance × leverage_multiplier
 quantity = floor(exposure / share_price)
 ```
 
-If the balance cannot fund a single share (or is unavailable), the engine still sends **1 share** so the attempt and the broker's response are logged. Every sizing input is stored on the trade and shown in the order log. On a VWAP limit entry, `share_price` is the limit (band-edge) price.
+If the balance cannot fund a single share (or is unavailable), the engine still sends **1 share** so the attempt and the broker's response are logged. Every sizing input is stored on the trade and shown in the order log. `share_price` is the live limit price (LTP).
 
 ### Step 5 — Entry execution
 
 - Among candidates passing scanner + depth + (optional) VWAP, pick the **strongest volume margin**.
 - Re-check depth immediately before ordering.
-- **VWAP off:** send a **market order**, then read its **traded price** from the orderbook.
-- **VWAP on:** send a **limit order** at the far edge of the band (BUY at the low, SELL at the high). The order stays `PENDING` and occupies the one-position slot until it fills, is cancelled, or is rejected. Exit legs are placed only after the fill.
+- Send a **limit order at the live LTP** (FYERS type 1). The band is only a filter; 98/102 are never hardcoded as the order price.
+- The order stays `PENDING` and occupies the one-position slot until it fills, is cancelled, or is rejected. Exit legs are placed only after the fill.
 
 ### Step 6 — Bracket exits
 

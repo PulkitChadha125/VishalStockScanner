@@ -21,6 +21,12 @@ def create_app(config_class=Config):
     imported = repository.bootstrap_scanner_from_csv(Config.SCANNER_CSV_PATH)
     if imported:
         print(f"[Scanner] Bootstrapped {imported} symbol(s) from scanner.csv", flush=True)
+    repaired = repository.repair_zero_scanner_volume_from_csv(Config.SCANNER_CSV_PATH)
+    if repaired:
+        print(
+            f"[Scanner] Restored volume difference on {repaired} symbol(s) from scanner.csv",
+            flush=True,
+        )
 
     from app.routes.symbols import symbols_bp
     from app.routes.scanner import scanner_bp

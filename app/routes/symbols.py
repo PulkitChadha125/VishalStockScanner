@@ -2,7 +2,7 @@ from datetime import datetime
 
 from flask import Blueprint, Response, jsonify, request
 
-from app import fyers_service, market_tz, repository, strategy_engine
+from app import fyers_service, market_tz, repository, scanner_service, strategy_engine
 from app.symbols_csv import parse_symbols_csv, symbols_to_csv
 
 symbols_bp = Blueprint("symbols", __name__)
@@ -133,6 +133,18 @@ def market_book_snapshot():
     vwap_enabled = bool(engine_status.get("vwap_enabled", True))
     open_position = engine_status.get("open_position")
     open_symbol = open_position["symbol_name"] if open_position else None
+    scanner_bias, scanner_info = scanner_service.get_live_bias()
+    scanner_skipped = bool(scanner_info.get("skipped"))
+    scanner_summary = {
+        "allowed_signal": scanner_bias,
+        "buy_count": scanner_info.get("buy_count", 0),
+        "sell_count": scanner_info.get("sell_count", 0),
+        "majority": scanner_info.get("majority", 0),
+        "total": scanner_info.get("total", 0),
+        "missing": scanner_info.get("missing", 0),
+        "skipped": scanner_skipped,
+        "is_neutral": scanner_bias is None and not scanner_skipped,
+    }
 
     if not strategy_running:
         trade_block_reason = "Strategy is stopped — click Start to take trades"
@@ -185,9 +197,25 @@ def market_book_snapshot():
             vwap_signal = signal
             vwap_reason = "VWAP filter off"
 
+        scanner_ok = bool(
+            signal
+            and (scanner_skipped or (scanner_bias is not None and signal == scanner_bias))
+        )
+        if signal and not scanner_ok:
+            if scanner_summary["is_neutral"]:
+                vwap_reason = (
+                    f"Scanner neutral — need {scanner_summary['majority']} of "
+                    f"{scanner_summary['total']} ({signal} blocked)"
+                )
+            else:
+                vwap_reason = (
+                    f"Scanner majority is {scanner_bias or '—'} — {signal} blocked"
+                )
+
         trade_ready = bool(
             signal
             and vwap_signal
+            and scanner_ok
             and can_trade
             and strategy_running
         )
@@ -212,6 +240,7 @@ def market_book_snapshot():
                 "vwap_signal": vwap_signal,
                 "vwap_ok": vwap_ok,
                 "vwap_reason": vwap_reason,
+                "scanner_ok": scanner_ok,
                 "trade_ready": trade_ready,
                 "cache_age_sec": depth.get("cache_age_sec"),
                 "book_source": depth.get("book_source", "rest"),
@@ -233,6 +262,7 @@ def market_book_snapshot():
             "can_take_trades": can_trade and strategy_running and not open_symbol,
             "trade_block_reason": trade_block_reason,
             "open_position_symbol": open_symbol,
+            "scanner": scanner_summary,
             "symbols": rows,
         }
     )

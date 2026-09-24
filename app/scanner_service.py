@@ -8,12 +8,17 @@ from app import fyers_service, repository
 def evaluate_depth_signal(
     total_bid_qty: float, total_ask_qty: float, volume_diff: float
 ) -> str | None:
-    """Same depth rule as watchlist: BUY / SELL / none."""
+    """
+    Same depth rule as watchlist: BUY / SELL / none.
+    Need a real imbalance that meets the threshold. A zero threshold
+    still requires bid != ask so a flat book is not counted as SELL.
+    """
     sell_diff = total_ask_qty - total_bid_qty
     buy_diff = total_bid_qty - total_ask_qty
-    if sell_diff >= volume_diff:
+    need = max(float(volume_diff or 0), 0.0)
+    if sell_diff > 0 and sell_diff >= need:
         return "SELL"
-    if buy_diff >= volume_diff:
+    if buy_diff > 0 and buy_diff >= need:
         return "BUY"
     return None
 

@@ -437,14 +437,10 @@ def is_engine_running() -> bool:
 def _evaluate_signal(
     total_bid_qty: float, total_ask_qty: float, volume_diff: float
 ) -> str | None:
-    """Compare summed bid-book qty vs summed ask-book qty (all depth levels)."""
-    sell_diff = total_ask_qty - total_bid_qty
-    buy_diff = total_bid_qty - total_ask_qty
-    if sell_diff >= volume_diff:
-        return "SELL"
-    if buy_diff >= volume_diff:
-        return "BUY"
-    return None
+    """Watchlist depth uses the same BUY/SELL rule as the scanner."""
+    return scanner_service.evaluate_depth_signal(
+        total_bid_qty, total_ask_qty, volume_diff
+    )
 
 
 def _vwap_enabled() -> bool:
@@ -573,12 +569,16 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
     sl_pct = float(symbol["stop_loss_pct"])
     tgt_pct = float(symbol["target_pct"])
 
-    limit_price: float | None = None
-    if _vwap_enabled() and vwap is not None:
-        limit_price = fyers_service.vwap_entry_limit_price(
-            signal, vwap, float(symbol.get("entry_buffer_pct") or 0)
-        )
-        entry_price = limit_price
+    live_ltp = fyers_service.get_ltp(symbol["symbol_name"])
+    if live_ltp is None and crossover:
+        live_ltp = crossover.get("ltp")
+    limit_price = fyers_service.live_entry_limit_price(
+        live_ltp, depth.get("bid_price"), depth.get("ask_price")
+    )
+    if not limit_price:
+        _log_app(f"Entry skipped — no live price for {symbol['symbol_name']}")
+        return
+    entry_price = limit_price
 
     sl_price, tgt_price = _calc_sl_target(entry_price, side, sl_pct, tgt_pct)
 

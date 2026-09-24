@@ -45,6 +45,7 @@ from app import (  # noqa: E402
     fyers_service,
     market_tz,
     repository,
+    scanner_service,
     strategy_engine as se,
 )
 
@@ -285,6 +286,11 @@ def scanner_bias(direction: str) -> None:
             set_depth(name, 100, 900, 50.0)
 
 
+def flatten_scanner() -> None:
+    for name in SCANNER_SYMBOLS:
+        set_depth(name, 100, 100, 50.0)
+
+
 def arm_entry(symbol: str, direction: str, price: float, fill_price: float) -> None:
     """Give one watchlist symbol a passing depth signal."""
     if direction == "BUY":
@@ -295,6 +301,16 @@ def arm_entry(symbol: str, direction: str, price: float, fill_price: float) -> N
 
 def disarm(symbol: str, price: float) -> None:
     set_depth(symbol, 100, 100, price)
+
+
+def fill_latest_entry(price: float) -> dict:
+    """Fill the newest resting entry limit so exit legs can be parked."""
+    entries = BROKER.legs("LIMIT", "entry")
+    if not entries:
+        raise AssertionError("no entry limit to fill")
+    BROKER.fill(entries[-1]["id"], price)
+    se._tick()
+    return entries[-1]
 
 
 def turn_vwap(enabled: bool) -> None:
@@ -314,8 +330,8 @@ def test_vwap_band_math() -> None:
     low, high = fyers_service.vwap_band_prices(100, 2)
     check("band low is 2% below VWAP", round(low, 2), 98.0)
     check("band high is 2% above VWAP", round(high, 2), 102.0)
-    check("buy limit sits at band low", fyers_service.vwap_entry_limit_price("BUY", 100, 2), 98.0)
-    check("sell limit sits at band high", fyers_service.vwap_entry_limit_price("SELL", 100, 2), 102.0)
+    check("live limit uses LTP", fyers_service.live_entry_limit_price(99.0), 99.0)
+    check("live limit falls back to ask", fyers_service.live_entry_limit_price(None, 98.5, 99.1), 99.1)
 
     ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 99, 2)
     check("buy inside band", ok, True)
@@ -335,9 +351,30 @@ def test_vwap_band_math() -> None:
     ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 99.99, 2)
     check("sell below VWAP blocked", ok, False)
 
+    check(
+        "flat book is not SELL when volume diff is 0",
+        scanner_service.evaluate_depth_signal(100, 100, 0),
+        None,
+    )
+    check(
+        "tiny buy imbalance counts only when threshold is 0",
+        scanner_service.evaluate_depth_signal(101, 100, 0),
+        "BUY",
+    )
+    check(
+        "watchlist 500 threshold ignores a 100 buy imbalance",
+        scanner_service.evaluate_depth_signal(200, 100, 500),
+        None,
+    )
+    check(
+        "watchlist 500 threshold accepts a 500 buy imbalance",
+        scanner_service.evaluate_depth_signal(600, 100, 500),
+        "BUY",
+    )
+
 
 def test_vwap_band_gate_on_tick() -> None:
-    section("VWAP-on entries are limits at the band edge")
+    section("VWAP-on entries are limits at the live LTP")
     orig = fyers_service.get_vwap_with_meta
     fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
     turn_vwap(True)
@@ -352,18 +389,18 @@ def test_vwap_band_gate_on_tick() -> None:
     se._tick()
     entries = BROKER.legs("LIMIT", "entry")
     check("buy limit sent when LTP is in 98-100", len(entries), 1)
-    check("buy limit price is band low", entries[0]["limit_price"], 98.0)
+    check("buy limit price is the live LTP", entries[0]["limit_price"], 99.0)
     check("buy limit is a buy", entries[0]["side"], 1)
     check("no market entry on VWAP path", len(BROKER.legs("MARKET")), 0)
     check("exit legs wait for the fill", len(BROKER.legs("SL-L")), 0)
-    check("qty sized off the 98 limit", entries[0]["qty"], int(10_000 * 5 / 98.0))
+    check("qty sized off the live LTP", entries[0]["qty"], int(10_000 * 5 / 99.0))
     trade = repository.get_open_trade()
     check("pending trade occupies the slot", trade["entry_status"], "PENDING")
 
     se._tick()
     check("no duplicate limit while pending", len(BROKER.legs("LIMIT", "entry")), 1)
 
-    BROKER.fill(entries[0]["id"], 98.0)
+    BROKER.fill(entries[0]["id"], 99.0)
     se._tick()
     check("target placed after fill", len(BROKER.legs("LIMIT", "target")), 1)
     check("sl placed after fill", len(BROKER.legs("SL-L")), 1)
@@ -378,7 +415,7 @@ def test_vwap_band_gate_on_tick() -> None:
 
 
 def test_vwap_sell_limit_at_band_high() -> None:
-    section("VWAP sell limit sits at the high of the band")
+    section("VWAP sell limit sits at the live LTP")
     orig = fyers_service.get_vwap_with_meta
     fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
     turn_vwap(True)
@@ -388,7 +425,7 @@ def test_vwap_sell_limit_at_band_high() -> None:
     se._tick()
     entries = BROKER.legs("LIMIT", "entry")
     check("sell limit sent when LTP is in 100-102", len(entries), 1)
-    check("sell limit price is band high", entries[0]["limit_price"], 102.0)
+    check("sell limit price is the live LTP", entries[0]["limit_price"], 101.0)
     check("sell limit is a sell", entries[0]["side"], -1)
     check("no market sell on VWAP path", len(BROKER.legs("MARKET")), 0)
 
@@ -430,6 +467,58 @@ def test_unfilled_limit_cancelled_when_ltp_leaves_band() -> None:
     turn_vwap(False)
 
 
+def test_scanner_neutral_blocks_even_when_depth_and_vwap_pass() -> None:
+    section("Scanner NEUTRAL blocks a watchlist BUY that is inside the VWAP band")
+    orig = fyers_service.get_vwap_with_meta
+    fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
+    turn_vwap(True)
+    BROKER.reset()
+    flatten_scanner()
+    set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=99.0)
+    se._tick()
+    check("no limit while scanner is neutral", len(BROKER.legs("LIMIT", "entry")), 0)
+    check("no market while scanner is neutral", len(BROKER.legs("MARKET")), 0)
+    check("no open trade", repository.get_open_trade(), None)
+    disarm("ALPHA", 100.10)
+    fyers_service.get_vwap_with_meta = orig
+    turn_vwap(False)
+    scanner_bias("BUY")
+
+
+def test_watchlist_depth_below_threshold_blocks() -> None:
+    section("Watchlist depth below volume diff blocks even when scanner+VWAP pass")
+    orig = fyers_service.get_vwap_with_meta
+    fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
+    turn_vwap(True)
+    BROKER.reset()
+    scanner_bias("BUY")
+    # ALPHA volume_difference is 500; buy_diff 100 is not enough
+    set_depth("ALPHA", 200, 100, 100.10, fill_price=100.00, ltp=99.0)
+    se._tick()
+    check("no limit when watchlist depth fails", len(BROKER.legs("LIMIT", "entry")), 0)
+    check("no market when watchlist depth fails", len(BROKER.legs("MARKET")), 0)
+    disarm("ALPHA", 100.10)
+    fyers_service.get_vwap_with_meta = orig
+    turn_vwap(False)
+
+
+def test_scanner_sell_blocks_watchlist_buy() -> None:
+    section("Scanner SELL majority blocks a watchlist BUY inside the VWAP band")
+    orig = fyers_service.get_vwap_with_meta
+    fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
+    turn_vwap(True)
+    BROKER.reset()
+    scanner_bias("SELL")
+    set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=99.0)
+    se._tick()
+    check("no buy limit against a SELL scanner", len(BROKER.legs("LIMIT", "entry")), 0)
+    check("no market buy against a SELL scanner", len(BROKER.legs("MARKET")), 0)
+    disarm("ALPHA", 100.10)
+    fyers_service.get_vwap_with_meta = orig
+    turn_vwap(False)
+    scanner_bias("BUY")
+
+
 def test_buy_target_hit(app):
     section("BUY entry -> target limit fills -> SL cancelled")
     BROKER.reset()
@@ -437,11 +526,12 @@ def test_buy_target_hit(app):
     arm_entry("ALPHA", "BUY", 100.10, fill_price=100.00)
 
     se._tick()
+    fill_latest_entry(100.00)
 
-    entry = BROKER.legs("MARKET")
-    target = BROKER.legs("LIMIT")
+    entry = BROKER.legs("LIMIT", "entry")
+    target = BROKER.legs("LIMIT", "target")
     stop = BROKER.legs("SL-L")
-    check("one market entry sent", len(entry), 1)
+    check("one live-price limit entry sent", len(entry), 1)
     check("entry side buy", entry[0]["side"], 1)
     check("target leg placed", len(target), 1)
     check("sl leg placed", len(stop), 1)
@@ -467,7 +557,7 @@ def test_buy_target_hit(app):
     # Another symbol also signals, but one-position-at-a-time must hold
     arm_entry("BETA", "BUY", 200.0, fill_price=200.0)
     se._tick()
-    check("no second entry while position open", len(BROKER.legs("MARKET")), 1)
+    check("no second entry while position open", len(BROKER.legs("LIMIT", "entry")), 1)
     check("still one open trade", repository.get_open_trade()["id"], trade["id"])
     disarm("BETA", 200.0)
 
@@ -486,7 +576,7 @@ def test_buy_target_hit(app):
     check("exit recorded as broker leg", closed["exit_via"], "broker_leg")
     check("position released", se.get_open_position(), None)
     check("no leftover legs", se.has_pending_leg_cancels(), False)
-    check("no extra orders sent", len(BROKER.legs("MARKET")), 1)
+    check("no extra entry limits sent", len(BROKER.legs("LIMIT", "entry")), 1)
     return closed
 
 
@@ -496,7 +586,7 @@ def test_same_symbol_reentry_after_exit():
     scanner_bias("BUY")
     arm_entry("ALPHA", "BUY", 100.10, fill_price=100.00)
     se._tick()
-    check("same symbol re-enters after exit", len(BROKER.legs("MARKET")), 1)
+    check("same symbol re-enters after exit", len(BROKER.legs("LIMIT", "entry")), 1)
     second = repository.get_open_trade()
     check("re-entry is a new trade id", second is not None, True)
     se.square_off_all_open_trades("STOP")
@@ -512,7 +602,8 @@ def test_sell_stop_hit():
     arm_entry("GAMMA", "SELL", 500.0, fill_price=500.0)
 
     se._tick()
-    target = BROKER.legs("LIMIT")[0]
+    fill_latest_entry(500.0)
+    target = BROKER.legs("LIMIT", "target")[0]
     stop = BROKER.legs("SL-L")[0]
     check("short target is a buy", target["side"], 1)
     check("short target = entry -2%", target["limit_price"], 490.00)
@@ -541,8 +632,9 @@ def test_rejected_sl_falls_back_to_local():
     arm_entry("BETA", "BUY", 200.0, fill_price=200.0)
 
     se._tick()
+    fill_latest_entry(200.0)
     trade = repository.get_open_trade()
-    check("target leg still placed", len(BROKER.legs("LIMIT")), 1)
+    check("target leg still placed", len(BROKER.legs("LIMIT", "target")), 1)
     check("sl leg missing", len(BROKER.legs("SL-L")), 0)
     check("exit mode hybrid", trade["exit_mode"], "hybrid")
 
@@ -553,7 +645,7 @@ def test_rejected_sl_falls_back_to_local():
     closed = repository.get_trade(trade["id"])
     check("local exit fired", closed["exit_reason"], "SL")
     check("exited with a market order", closed["exit_via"], "market_order")
-    check("orphan target leg cancelled", BROKER.legs("LIMIT")[0]["id"] in BROKER.cancelled,
+    check("orphan target leg cancelled", BROKER.legs("LIMIT", "target")[0]["id"] in BROKER.cancelled,
           True)
     check("position released", se.get_open_position(), None)
     BROKER.reject_sl = False
@@ -567,8 +659,9 @@ def test_unconfirmed_cancel_blocks_next_entry():
     arm_entry("DELTA", "BUY", 300.0, fill_price=300.0)
 
     se._tick()
+    fill_latest_entry(300.0)
     trade = repository.get_open_trade()
-    target = BROKER.legs("LIMIT")[0]
+    target = BROKER.legs("LIMIT", "target")[0]
     stop = BROKER.legs("SL-L")[0]
 
     BROKER.cancel_confirms = False
@@ -585,7 +678,7 @@ def test_unconfirmed_cancel_blocks_next_entry():
     disarm("DELTA", 300.0)
     arm_entry("EPSILON", "BUY", 100.0, fill_price=100.0)
     se._tick()
-    check("no entry while leg unconfirmed", len(BROKER.legs("MARKET")), 0)
+    check("no entry while leg unconfirmed", len(BROKER.legs("LIMIT", "entry")), 0)
     check("no open trade", repository.get_open_trade(), None)
 
     # Broker accepts the cancel -> trading resumes on the next tick
@@ -594,7 +687,8 @@ def test_unconfirmed_cancel_blocks_next_entry():
     check("leftover leg cleared", se.has_pending_leg_cancels(), False)
     check("sl order cancelled", BROKER.book[stop["id"]]["status"],
           fyers_service.ORDER_STATUS_CANCELLED)
-    check("entry taken after cleanup", len(BROKER.legs("MARKET")), 1)
+    check("entry taken after cleanup", len(BROKER.legs("LIMIT", "entry")), 1)
+    fill_latest_entry(100.0)
     return repository.get_open_trade()
 
 
@@ -661,6 +755,9 @@ def main() -> int:
         test_vwap_band_gate_on_tick()
         test_vwap_sell_limit_at_band_high()
         test_unfilled_limit_cancelled_when_ltp_leaves_band()
+        test_scanner_neutral_blocks_even_when_depth_and_vwap_pass()
+        test_watchlist_depth_below_threshold_blocks()
+        test_scanner_sell_blocks_watchlist_buy()
         first_trade = test_buy_target_hit(app)
         test_same_symbol_reentry_after_exit()
         test_sell_stop_hit()

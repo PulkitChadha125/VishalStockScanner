@@ -238,6 +238,43 @@ def bootstrap_scanner_from_csv(csv_path) -> int:
     return len(rows)
 
 
+def repair_zero_scanner_volume_from_csv(csv_path) -> int:
+    """
+    If every scanner row has volume_difference 0, copy thresholds from scanner.csv.
+    An empty/zero threshold makes majority fire on any 1-share imbalance.
+    """
+    symbols = list_scanner_symbols()
+    if not symbols:
+        return 0
+    if any(float(s.get("volume_difference") or 0) > 0 for s in symbols):
+        return 0
+    path = csv_path
+    if not path.exists():
+        return 0
+    from app.scanner_csv import parse_scanner_csv
+
+    rows, errors = parse_scanner_csv(path.read_bytes())
+    if errors or not rows:
+        return 0
+    by_name = {
+        str(r["symbol_name"]).strip().upper(): float(r.get("volume_difference") or 0)
+        for r in rows
+    }
+    updated = 0
+    for sym in symbols:
+        new_diff = by_name.get(str(sym["symbol_name"]).strip().upper())
+        if new_diff is None or new_diff <= 0:
+            continue
+        update_scanner_symbol(
+            sym["id"],
+            sym["symbol_name"],
+            sym["time_frame"],
+            new_diff,
+        )
+        updated += 1
+    return updated
+
+
 def list_order_logs() -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(

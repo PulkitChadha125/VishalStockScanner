@@ -10,6 +10,7 @@
   const updatedEl = document.getElementById("market-book-updated");
   const bannerEl = document.getElementById("market-book-banner");
   const hoursEl = document.getElementById("market-book-hours");
+  const scannerEl = document.getElementById("market-book-scanner");
 
   if (!tbody) return;
 
@@ -78,11 +79,14 @@
     if (!row.signal) return '<span class="book-signal book-signal--none">—</span>';
     if (row.trade_ready) {
       const cls = row.vwap_signal === "BUY" ? "book-signal--buy" : "book-signal--sell";
-      return `<span class="book-signal ${cls} book-signal--ready" title="Strategy will enter this trade">READY ${escapeHtml(row.vwap_signal)}</span>`;
+      return `<span class="book-signal ${cls} book-signal--ready" title="Scanner + depth + VWAP all pass">READY ${escapeHtml(row.vwap_signal)}</span>`;
+    }
+    if (row.vwap_ok && row.scanner_ok === false) {
+      return `<span class="book-signal book-signal--none" title="${escapeHtml(row.vwap_reason || "Scanner majority does not match")}">SCANNER</span>`;
     }
     if (row.vwap_signal) {
       const cls = row.vwap_signal === "BUY" ? "book-signal--buy" : "book-signal--sell";
-      return `<span class="book-signal ${cls}" title="Signal + VWAP match — waiting for strategy">${escapeHtml(row.vwap_signal)}</span>`;
+      return `<span class="book-signal ${cls}" title="Depth + VWAP match — waiting for strategy">${escapeHtml(row.vwap_signal)}</span>`;
     }
     return `<span class="book-signal book-signal--none" title="${escapeHtml(row.vwap_reason || "VWAP not in confluence")}">BLOCKED</span>`;
   }
@@ -116,6 +120,19 @@
     if (hoursEl && data.start_time && data.stop_time) {
       const tz = data.timezone ? ` ${data.timezone}` : "";
       hoursEl.textContent = `${data.start_time}–${data.stop_time}${tz}`;
+    }
+
+    if (scannerEl) {
+      const sc = data.scanner;
+      if (!sc || sc.skipped) {
+        scannerEl.textContent = "Scanner: skipped (empty list)";
+      } else if (sc.allowed_signal) {
+        scannerEl.textContent =
+          `Scanner: ${sc.allowed_signal} only (${sc.buy_count} BUY / ${sc.sell_count} SELL, need ${sc.majority} of ${sc.total})`;
+      } else {
+        scannerEl.textContent =
+          `Scanner: NEUTRAL (${sc.buy_count} BUY / ${sc.sell_count} SELL, need ${sc.majority} of ${sc.total})`;
+      }
     }
   }
 
@@ -215,6 +232,7 @@
       const snapshot = JSON.stringify({
         market_open: data.market_open,
         market_message: data.market_message,
+        scanner: data.scanner,
         symbols: data.symbols,
       });
       if (snapshot !== lastJson) {

@@ -1209,12 +1209,22 @@ def passes_vwap_band_filter(
     return False, "Unknown signal", details
 
 
-def vwap_entry_limit_price(signal: str, vwap: float, buffer_pct: float) -> float:
+def live_entry_limit_price(
+    ltp: float | None,
+    bid_price: float | None = None,
+    ask_price: float | None = None,
+) -> float | None:
     """
-    Limit entry at the far edge of the VWAP band.
-    BUY -> band low (e.g. 98). SELL -> band high (e.g. 102).
+    Limit at the price currently trading — not a hardcoded band edge.
+    Prefers live LTP, then ask, then bid. Rounded to the ₹0.05 tick.
     """
-    low, high = vwap_band_prices(vwap, buffer_pct)
-    if signal == "BUY":
-        return round_to_tick(low, "down")
-    return round_to_tick(high, "up")
+    for value in (ltp, ask_price, bid_price):
+        if value is None:
+            continue
+        try:
+            price = float(value)
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            return round_to_tick(price)
+    return None
