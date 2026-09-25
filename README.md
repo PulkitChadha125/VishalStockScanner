@@ -55,7 +55,7 @@ Each second during the trading window, the engine:
 | **Max trades per day** | **Universe-wide** daily cap (default **2**) |
 | **Position size** | `quantity = floor(available_balance × leverage_multiplier / share_price)` |
 | **Daily schedule** | Auto-login at 09:00 IST, auto-start at configured start time, auto-stop at stop time |
-| **VWAP switch** | Global toggle — when **off**, the live VWAP LTP band is skipped for watchlist entries |
+| **VWAP switch** | Global toggle — when **off**, the VWAP entry pocket and previous-close check are skipped for watchlist entries |
 
 ### Current scope
 
@@ -63,7 +63,7 @@ Each second during the trading window, the engine:
 - Background strategy engine (1-second scan loop)
 - Depth-based scanner majority gate
 - Exposure-based position sizing
-- Limit entry at the **live ask (BUY) / bid (SELL)** once LTP is inside the VWAP band
+- Limit entry at the **live ask (BUY) / bid (SELL)** once LTP is inside the VWAP entry pocket
 - Bracket exit orders (target limit / stop-loss SL-L) with OCO cancellation
 - Auto scheduler (login / start / stop)
 - WebSocket + REST market depth and LTP
@@ -138,7 +138,7 @@ When one leg fills, the other is cancelled and then **re-read from the orderbook
 | A leg is cancelled or expires externally | Dropped to local monitoring, logged |
 | Orderbook polling keeps failing (10 ticks) | Dropped to local monitoring, logged |
 | Manual **Stop**, EOD, or square-off | Pending legs are cancelled **first**, then the market exit is sent. An unfilled VWAP limit is cancelled with no flatten. |
-| LTP leaves the VWAP band before the entry limit fills | Resting limit cancelled; trade closed as `UNFILLED` with zero P&amp;L |
+| LTP leaves the VWAP pocket before the entry limit fills | Resting limit cancelled; trade closed as `UNFILLED` with zero P&amp;L |
 | A leg fills during that cancel | That fill is recorded as the exit; no second order is sent |
 | App restarts with an open trade | Leg ids are restored from the trade record and monitoring resumes |
 
@@ -160,8 +160,8 @@ When one leg fills, the other is cancelled and then **re-read from the orderbook
 ### Symbol Settings (`/`)
 
 - **Strategy bar:** API status, strategy status, balance, start/stop times, max trades, timezone, leverage multiplier, **VWAP** checkbox, Save, Login, Start, Stop
-- **Watchlist table:** add / edit / delete symbols; CSV import/export
-- **Live order book:** per-symbol depth totals, signal, VWAP status
+- **Watchlist table:** add / edit / delete symbols (volume diff, SL%, target%, **entry range down %**, **entry range up %**); CSV import/export
+- **Live order book:** per-symbol depth totals, signal, VWAP pocket status
 
 ### Scanner (`/scanner`)
 
@@ -292,7 +292,7 @@ Open: **http://127.0.0.1:5000**
 
 1. Set **Start**, **Stop**, **Max** trades, **Timezone**, **Leverage**, **VWAP** → **Save**.
 2. **Start** — auto-login if needed, then start the engine.
-3. Add/edit watchlist symbols (volume diff = depth buffer).
+3. Add/edit watchlist symbols (volume diff = depth buffer; **range down** = dead zone next to VWAP; **range up** = outer cap).
 4. **Stop** — halts the strategy, cancels any live exit legs, squares off open positions, resets the session.
 
 **Max trades example:** Max = 2 → two entries total across all watchlist symbols for the day.
@@ -333,6 +333,7 @@ It runs entirely offline against a **temporary database** (it aborts if it is no
 | SL leg rejected | Falls back to `hybrid` mode and still exits locally on the stop |
 | Cancel not confirmed | Retries, blocks new entries, resumes once the broker confirms |
 | EOD square-off | Cancels both legs before the market exit |
+| VWAP entry pocket | BUY only in 95–98, SELL only in 102–105 (2% down / 5% up); dead zone 98–102 is blocked; previous close must sit on the correct side of VWAP |
 | API surface | `/api/strategy` and `/api/logs/orders` expose the leg data the UI renders |
 
 Exit code is `0` when every check passes.
@@ -369,6 +370,10 @@ Base URL: `http://127.0.0.1:5000`
   "entry_range_up_pct": 5.0
 }
 ```
+
+`entry_range_up_pct` must be greater than `entry_range_down_pct`. Defaults if omitted: down **2**, up **5**.
+
+**Watchlist CSV columns:** `Symbol`, `Time Frame`, `Volume Diff`, `Stop Loss %`, `Target %`, `Entry Range Down %`, `Entry Range Up %`. Older files with `Entry Buffer %` still load as range down (up defaults to 5).
 
 ### Scanner — `/api/scanner`
 
@@ -466,7 +471,7 @@ SQLite file: `data/symbols.db`
 | `target_leg_request/response`, `sl_leg_request/response` | Raw FYERS payloads |
 | `exit_leg`, `exit_leg_state`, `exit_leg_cancels`, `exit_via` | Which leg executed, its orderbook row, cancellation results |
 | `available_balance`, `leverage_multiplier`, `exposure`, `share_value`, `order_value` | Position sizing audit |
-| `vwap`, `entry_ltp`, `entry_range_down_pct`, `entry_range_up_pct`, `vwap_band_low`, `vwap_band_high` | Session VWAP vs the side pocket at entry |
+| `vwap`, `entry_ltp`, `prev_close`, `entry_range_down_pct`, `entry_range_up_pct`, `vwap_band_low`, `vwap_band_high` | Session VWAP, last completed close, and the side pocket (low–high) at entry |
 
 On first run, if `scanner_settings` is empty and `scanner.csv` exists in the project root, symbols are imported automatically.
 
@@ -518,7 +523,7 @@ Each second while scanning:
 
 ```
 [SCANNER 10:15:01] buy=12 sell=8 none=0 missing=0 total=20 majority_need=11 bias=BUY -> only BUY entries
-[DEPTH 10:15:01] ACC ws age=0.3s bid_p=1250.00 ask_p=1250.05 book_buy=30000 book_sell=12000 ... signal=BUY vwap=off
+[DEPTH 10:15:01] ACC ws age=0.3s bid_p=1250.00 ask_p=1250.05 book_buy=30000 book_sell=12000 ... signal=BUY vwap=1250.10 ltp=1220.00 band=1187.6-1225.1 range=2-5% prev_close=1210.00 band_ok=True
 [EXIT LEGS] ACC entry=1250.00 target=1275.00(PLACED) sl_trigger=1225.00 sl_limit=1223.75(PLACED) mode=broker
 [EXIT LEGS] ACC cancel SL leg 25090200123456: ok after 1 attempt(s)
 [TRADE] ACC BUY entry=... @ 1250.00 exit=... @ 1275.20 reason=TARGET pnl=252.00 (entry=FILLED, exit=FILLED)
@@ -568,24 +573,36 @@ Symbols with no depth are counted as missing and never help a side reach the maj
 
 Only symbols whose depth signal **matches** the current scanner bias are considered. Same formula as above, using the watchlist symbol's own `volume_difference` (e.g. 5000 means the buy side must exceed the sell side by at least 5000).
 
-### Step 3 — VWAP band filter (optional)
+### Step 3 — VWAP entry pocket (optional)
 
-Controlled by the **VWAP** checkbox (`vwap_enabled`). When enabled, session VWAP is still calculated from today's candles:
+Controlled by the **VWAP** checkbox (`vwap_enabled`). When enabled, session VWAP is calculated from today's candles:
 
 `sum(typical_price × volume) / sum(volume)`
 
-That VWAP is then compared **every second** to the symbol's **live WebSocket LTP**, using the per-symbol **entry range down %** (dead zone) and **entry range up %** (outer cap), and to the last **completed candle close**.
+That VWAP is compared **every second** to the symbol's **live WebSocket LTP** and to the last **completed candle close**. Each watchlist symbol has two percentages:
+
+| Setting | Example | Meaning |
+|---------|---------|---------|
+| **Entry range down** | 2% | Dead zone next to VWAP. No trade this close to VWAP. |
+| **Entry range up** | 5% | Outer cap. No trade farther than this from VWAP. |
 
 Example: VWAP = 100, range down = 2%, range up = 5%
 
 | Signal | Allowed | Rejected |
 |--------|---------|----------|
-| BUY | Previous close **below** 100, and **95 < LTP < 98** | LTP in the 98–102 dead zone, LTP ≤ 95, or previous close ≥ VWAP |
-| SELL | Previous close **above** 100, and **102 < LTP < 105** | LTP in the 98–102 dead zone, LTP ≥ 105, or previous close ≤ VWAP |
+| BUY | Previous close **below** 100, and **95 < LTP < 98** | LTP in the 98–102 dead zone, LTP ≤ 95, LTP ≥ 98, or previous close ≥ VWAP |
+| SELL | Previous close **above** 100, and **102 < LTP < 105** | LTP in the 98–102 dead zone, LTP ≥ 105, LTP ≤ 102, or previous close ≤ VWAP |
 
-Example: previous close 103, LTP becomes 103 → SELL. Previous close 97, LTP becomes 96 → BUY. LTP 101 does **not** sell (too close to VWAP).
+Worked prices:
 
-Buy vs sell still also needs scanner + watchlist depth. A missing previous close skips the entry. A resting unfilled limit is cancelled only if live LTP leaves the pocket.
+| LTP | Side | Trade? |
+|-----|------|--------|
+| 96 | BUY | Yes — inside 95–98, if previous close is below VWAP |
+| 99 | BUY | No — inside the 2% dead zone |
+| 103 | SELL | Yes — inside 102–105, if previous close is above VWAP |
+| 101 | SELL | No — inside the 2% dead zone |
+
+Buy vs sell still also needs scanner + watchlist depth. A missing previous close skips the entry. A resting unfilled limit is cancelled only if live LTP leaves that pocket.
 
 When the VWAP switch is off, this gate is skipped entirely. If VWAP or LTP is missing, the entry is skipped.
 
@@ -602,7 +619,7 @@ If the balance cannot fund a single share (or is unavailable), the engine still 
 
 - Among candidates passing scanner + depth + (optional) VWAP, pick the **strongest volume margin**.
 - Re-check depth immediately before ordering.
-- Send a **limit order at the live ask (BUY) or live bid (SELL)**. The VWAP band is only a filter; 98/102 are never the order price.
+- Send a **limit order at the live ask (BUY) or live bid (SELL)**. The VWAP pocket is only a filter; 95/98/102/105 are never the order price.
 - The order stays `PENDING` and occupies the one-position slot until it fills, is cancelled, or is rejected. Exit legs are placed only after the fill.
 
 ### Step 6 — Bracket exits
