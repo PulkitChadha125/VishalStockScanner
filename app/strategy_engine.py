@@ -190,6 +190,8 @@ class OpenPosition:
     vwap_band_low: float | None = None
     vwap_band_high: float | None = None
     entry_buffer_pct: float | None = None
+    entry_range_down_pct: float | None = None
+    entry_range_up_pct: float | None = None
 
 
 def _now_market() -> datetime:
@@ -343,6 +345,8 @@ def _position_from_trade(trade: dict) -> OpenPosition:
         vwap_band_low=trade.get("vwap_band_low"),
         vwap_band_high=trade.get("vwap_band_high"),
         entry_buffer_pct=trade.get("entry_buffer_pct"),
+        entry_range_down_pct=trade.get("entry_range_down_pct"),
+        entry_range_up_pct=trade.get("entry_range_up_pct"),
     )
 
 
@@ -454,9 +458,14 @@ def _vwap_allows_entry(sym: dict, signal: str) -> tuple[bool, dict]:
     ltp = fyers_service.get_ltp(sym["symbol_name"])
     vwap_meta = fyers_service.get_vwap_with_meta(sym["symbol_name"], time_frame)
     vwap = vwap_meta.get("vwap") if vwap_meta else None
-    buffer_pct = float(sym.get("entry_buffer_pct") or 0)
+    range_down, range_up = fyers_service.symbol_entry_ranges(sym)
     ok, _, details = fyers_service.passes_vwap_band_filter(
-        signal, vwap, ltp, buffer_pct
+        signal,
+        vwap,
+        ltp,
+        range_down,
+        range_up,
+        vwap_meta.get("prev_close") if vwap_meta else None,
     )
     if vwap_meta:
         details.setdefault("vwap_api_request", vwap_meta.get("request"))
@@ -530,9 +539,14 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         vwap_meta = fyers_service.get_vwap_with_meta(symbol["symbol_name"], time_frame)
         vwap = vwap_meta.get("vwap") if vwap_meta else None
         ltp = fyers_service.get_ltp(symbol["symbol_name"])
-        buffer_pct = float(symbol.get("entry_buffer_pct") or 0)
+        range_down, range_up = fyers_service.symbol_entry_ranges(symbol)
         vwap_ok, vwap_reason, crossover = fyers_service.passes_vwap_band_filter(
-            signal, vwap, ltp, buffer_pct
+            signal,
+            vwap,
+            ltp,
+            range_down,
+            range_up,
+            vwap_meta.get("prev_close") if vwap_meta else None,
         )
         if vwap is None:
             _log_app(
@@ -541,7 +555,9 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
                     "entry_price": entry_price,
                     "time_frame": time_frame,
                     "entry_ltp": ltp,
-                    "entry_buffer_pct": buffer_pct,
+                    "entry_range_down_pct": range_down,
+                    "entry_range_up_pct": range_up,
+                    "entry_buffer_pct": range_down,
                     "vwap_api_request": vwap_meta.get("request") if vwap_meta else None,
                     "vwap_api_response": vwap_meta.get("response") if vwap_meta else None,
                 },
@@ -556,7 +572,8 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
             f"[VWAP] {symbol['symbol_name']} tf={time_frame} "
             f"vwap={vwap:.2f} ltp={crossover.get('ltp')} "
             f"band={crossover.get('vwap_band_low')}-{crossover.get('vwap_band_high')} "
-            f"buffer={buffer_pct}% signal={signal} allowed={vwap_ok}",
+            f"range={range_down:g}-{range_up:g}% prev_close={crossover.get('prev_close')} "
+            f"signal={signal} allowed={vwap_ok}",
             flush=True,
         )
         if not vwap_ok:
@@ -664,11 +681,17 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
         details={
             "vwap": vwap,
             "time_frame": time_frame,
-            "prev_prev_close": crossover.get("prev_prev_close"),
+            "prev_prev_close": (
+                crossover.get("prev_prev_close")
+                or (vwap_meta.get("prev_prev_close") if vwap_meta else None)
+            ),
             "prev_close": crossover.get("prev_close"),
+            "approach": crossover.get("approach"),
             "vwap_crossover": crossover.get("crossover"),
             "entry_ltp": crossover.get("ltp"),
-            "entry_buffer_pct": crossover.get("entry_buffer_pct"),
+            "entry_buffer_pct": crossover.get("entry_range_down_pct"),
+            "entry_range_down_pct": crossover.get("entry_range_down_pct"),
+            "entry_range_up_pct": crossover.get("entry_range_up_pct"),
             "vwap_band_low": crossover.get("vwap_band_low"),
             "vwap_band_high": crossover.get("vwap_band_high"),
             "vwap_band_passed": crossover.get("vwap_band_passed"),
@@ -739,7 +762,9 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
             vwap_value=vwap,
             vwap_band_low=crossover.get("vwap_band_low"),
             vwap_band_high=crossover.get("vwap_band_high"),
-            entry_buffer_pct=crossover.get("entry_buffer_pct"),
+            entry_buffer_pct=crossover.get("entry_range_down_pct"),
+            entry_range_down_pct=crossover.get("entry_range_down_pct"),
+            entry_range_up_pct=crossover.get("entry_range_up_pct"),
         )
         _last_signal = f"{signal} {symbol['symbol_name']}"
         pos = _open_position
@@ -1519,10 +1544,22 @@ def _pending_entry_still_in_band(pos: OpenPosition, ltp: float | None) -> bool:
     """Keep the resting limit only while live LTP is still inside the VWAP band."""
     if ltp is None:
         return True
-    buffer = float(pos.entry_buffer_pct or 0)
+    sym = repository.get_symbol_by_name(pos.symbol_name)
+    if sym:
+        range_down, range_up = fyers_service.symbol_entry_ranges(sym)
+    else:
+        range_down = float(
+            pos.entry_range_down_pct
+            if pos.entry_range_down_pct is not None
+            else (pos.entry_buffer_pct or fyers_service.DEFAULT_RANGE_DOWN_PCT)
+        )
+        range_up = float(
+            pos.entry_range_up_pct
+            if pos.entry_range_up_pct is not None
+            else fyers_service.DEFAULT_RANGE_UP_PCT
+        )
     vwap = pos.vwap_value
     if _vwap_enabled():
-        sym = repository.get_symbol_by_name(pos.symbol_name)
         time_frame = sym["time_frame"] if sym else "5m"
         meta = fyers_service.get_vwap_with_meta(pos.symbol_name, time_frame)
         if meta and meta.get("vwap"):
@@ -1531,9 +1568,14 @@ def _pending_entry_still_in_band(pos: OpenPosition, ltp: float | None) -> bool:
         low, high = pos.vwap_band_low, pos.vwap_band_high
         if low is None or high is None:
             return True
-        vwap = (float(low) + float(high)) / 2
+        return float(low) < float(ltp) < float(high)
     ok, _, _ = fyers_service.passes_vwap_band_filter(
-        pos.side_label, vwap, ltp, buffer
+        pos.side_label,
+        vwap,
+        ltp,
+        range_down,
+        range_up,
+        require_direction=False,
     )
     return ok
 
@@ -1835,7 +1877,9 @@ def _scan_for_entry():
                         f" vwap={crossover.get('vwap')} ltp={crossover.get('ltp')} "
                         f"band={crossover.get('vwap_band_low')}-"
                         f"{crossover.get('vwap_band_high')} "
-                        f"buffer={crossover.get('entry_buffer_pct')}% "
+                        f"range={crossover.get('entry_range_down_pct')}-"
+                        f"{crossover.get('entry_range_up_pct')}% "
+                        f"prev_close={crossover.get('prev_close')} "
                         f"band_ok={vwap_ok}"
                     )
                 else:

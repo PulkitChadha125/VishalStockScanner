@@ -55,7 +55,8 @@ function renderTable(symbols) {
       <td>${formatVolume(s.volume_difference)}</td>
       <td>${formatPct(s.stop_loss_pct)}</td>
       <td>${formatPct(s.target_pct)}</td>
-      <td>${formatPct(s.entry_buffer_pct)}</td>
+      <td>${formatPct(s.entry_range_down_pct ?? s.entry_buffer_pct)}</td>
+      <td>${formatPct(s.entry_range_up_pct)}</td>
       <td class="col-actions">
         <div class="action-group">
           <button type="button" class="btn btn--sm btn--edit" data-edit="${s.id}">Edit</button>
@@ -84,7 +85,9 @@ function openModal(title, data = null) {
   document.getElementById("volume-difference").value = data?.volume_difference ?? "";
   document.getElementById("stop-loss").value = data?.stop_loss_pct ?? "";
   document.getElementById("target").value = data?.target_pct ?? "";
-  document.getElementById("entry-buffer").value = data?.entry_buffer_pct ?? "2";
+  document.getElementById("entry-range-down").value =
+    data?.entry_range_down_pct ?? data?.entry_buffer_pct ?? "2";
+  document.getElementById("entry-range-up").value = data?.entry_range_up_pct ?? "5";
 
   editingId = data?.id ?? null;
   modal.classList.add("is-open");
@@ -106,7 +109,8 @@ function getFormPayload() {
     volume_difference: parseFloat(document.getElementById("volume-difference").value),
     stop_loss_pct: parseFloat(document.getElementById("stop-loss").value),
     target_pct: parseFloat(document.getElementById("target").value),
-    entry_buffer_pct: parseFloat(document.getElementById("entry-buffer").value),
+    entry_range_down_pct: parseFloat(document.getElementById("entry-range-down").value),
+    entry_range_up_pct: parseFloat(document.getElementById("entry-range-up").value),
   };
 }
 

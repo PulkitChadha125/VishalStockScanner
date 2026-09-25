@@ -31,9 +31,20 @@ def enrich_trade_for_display(trade: dict, persist: bool = True) -> dict:
         if enriched.get("volume_difference") is None:
             enriched["volume_difference"] = sym["volume_difference"]
             updates["volume_difference"] = sym["volume_difference"]
-        if enriched.get("entry_buffer_pct") is None and sym.get("entry_buffer_pct") is not None:
-            enriched["entry_buffer_pct"] = sym["entry_buffer_pct"]
-            updates["entry_buffer_pct"] = sym["entry_buffer_pct"]
+        if enriched.get("entry_range_down_pct") is None:
+            down = sym.get("entry_range_down_pct", sym.get("entry_buffer_pct"))
+            if down is not None:
+                enriched["entry_range_down_pct"] = down
+                updates["entry_range_down_pct"] = down
+                if enriched.get("entry_buffer_pct") is None:
+                    enriched["entry_buffer_pct"] = down
+                    updates["entry_buffer_pct"] = down
+        elif enriched.get("entry_buffer_pct") is None:
+            enriched["entry_buffer_pct"] = enriched["entry_range_down_pct"]
+            updates["entry_buffer_pct"] = enriched["entry_range_down_pct"]
+        if enriched.get("entry_range_up_pct") is None and sym.get("entry_range_up_pct") is not None:
+            enriched["entry_range_up_pct"] = sym["entry_range_up_pct"]
+            updates["entry_range_up_pct"] = sym["entry_range_up_pct"]
 
     vwap_meta = None
     if enriched.get("vwap") is None:

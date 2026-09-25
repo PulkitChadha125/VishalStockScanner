@@ -147,6 +147,20 @@ def init_db(database_path: Path) -> None:
             "UPDATE symbol_settings SET entry_buffer_pct = 2 "
             "WHERE entry_buffer_pct IS NULL"
         )
+        try:
+            conn.execute(
+                "ALTER TABLE symbol_settings ADD COLUMN entry_range_down_pct "
+                "REAL NOT NULL DEFAULT 2"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE symbol_settings ADD COLUMN entry_range_up_pct "
+                "REAL NOT NULL DEFAULT 5"
+            )
+        except sqlite3.OperationalError:
+            pass
         conn.execute(
             """
             UPDATE strategy_settings
@@ -175,6 +189,29 @@ def init_db(database_path: Path) -> None:
             )
             conn.execute(
                 "INSERT INTO app_meta (key, value) VALUES ('default_timezone_ist', '1')"
+            )
+        range_migrated = conn.execute(
+            "SELECT 1 FROM app_meta WHERE key = 'entry_range_pockets'"
+        ).fetchone()
+        if not range_migrated:
+            conn.execute(
+                """
+                UPDATE symbol_settings
+                SET entry_range_down_pct = COALESCE(entry_buffer_pct, 2)
+                """
+            )
+            conn.execute(
+                """
+                UPDATE symbol_settings
+                SET entry_range_up_pct = CASE
+                    WHEN COALESCE(entry_range_up_pct, 5) <= entry_range_down_pct
+                    THEN entry_range_down_pct + 3
+                    ELSE COALESCE(entry_range_up_pct, 5)
+                END
+                """
+            )
+            conn.execute(
+                "INSERT INTO app_meta (key, value) VALUES ('entry_range_pockets', '1')"
             )
         try:
             conn.execute("ALTER TABLE trades ADD COLUMN details TEXT")
@@ -227,6 +264,12 @@ def symbol_row_to_dict(row: sqlite3.Row) -> dict:
     entry_buffer = (
         row["entry_buffer_pct"] if "entry_buffer_pct" in keys else 2
     )
+    range_down = (
+        row["entry_range_down_pct"] if "entry_range_down_pct" in keys else entry_buffer
+    )
+    range_up = (
+        row["entry_range_up_pct"] if "entry_range_up_pct" in keys else 5
+    )
     return {
         "id": row["id"],
         "symbol_name": row["symbol_name"],
@@ -234,7 +277,9 @@ def symbol_row_to_dict(row: sqlite3.Row) -> dict:
         "volume_difference": row["volume_difference"],
         "stop_loss_pct": row["stop_loss_pct"],
         "target_pct": row["target_pct"],
-        "entry_buffer_pct": float(entry_buffer or 0),
+        "entry_buffer_pct": float(range_down if range_down is not None else entry_buffer or 0),
+        "entry_range_down_pct": float(range_down if range_down is not None else 2),
+        "entry_range_up_pct": float(range_up if range_up is not None else 5),
         "tsl": tsl,
     }
 
@@ -287,9 +332,12 @@ def trade_row_to_dict(row: sqlite3.Row) -> dict:
         "time_frame": details.get("time_frame"),
         "prev_prev_close": details.get("prev_prev_close"),
         "prev_close": details.get("prev_close"),
+        "approach": details.get("approach"),
         "vwap_crossover": details.get("vwap_crossover"),
         "entry_ltp": details.get("entry_ltp"),
         "entry_buffer_pct": details.get("entry_buffer_pct"),
+        "entry_range_down_pct": details.get("entry_range_down_pct"),
+        "entry_range_up_pct": details.get("entry_range_up_pct"),
         "vwap_band_low": details.get("vwap_band_low"),
         "vwap_band_high": details.get("vwap_band_high"),
         "vwap_band_passed": details.get("vwap_band_passed"),

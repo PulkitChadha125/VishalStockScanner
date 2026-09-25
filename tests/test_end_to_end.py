@@ -325,11 +325,18 @@ def turn_vwap(enabled: bool) -> None:
     )
 
 
+def fake_vwap(prev_close: float) -> dict:
+    return {"vwap": 100.0, "prev_close": prev_close}
+
+
 def test_vwap_band_math() -> None:
-    section("VWAP LTP band: BUY 98-100, SELL 100-102")
-    low, high = fyers_service.vwap_band_prices(100, 2)
-    check("band low is 2% below VWAP", round(low, 2), 98.0)
-    check("band high is 2% above VWAP", round(high, 2), 102.0)
+    section("VWAP entry pocket plus previous-close direction")
+    buy_low, buy_high = fyers_service.vwap_entry_pocket_prices("BUY", 100, 2, 5)
+    sell_low, sell_high = fyers_service.vwap_entry_pocket_prices("SELL", 100, 2, 5)
+    check("buy pocket low is 5% below VWAP", round(buy_low, 2), 95.0)
+    check("buy pocket high is 2% below VWAP", round(buy_high, 2), 98.0)
+    check("sell pocket low is 2% above VWAP", round(sell_low, 2), 102.0)
+    check("sell pocket high is 5% above VWAP", round(sell_high, 2), 105.0)
     check(
         "buy limit uses the live ask",
         fyers_service.live_entry_limit_price("BUY", 98.5, 99.15, 99.0),
@@ -341,23 +348,44 @@ def test_vwap_band_math() -> None:
         98.5,
     )
 
-    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 99, 2)
-    check("buy inside band", ok, True)
-    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 100, 2)
-    check("buy at VWAP", ok, True)
-    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 97.99, 2)
-    check("buy below band blocked", ok, False)
-    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 100.01, 2)
-    check("buy above VWAP blocked", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 96, 2, 5, 98)
+    check("buy in 95-98 pocket from below", ok, True)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 97.5, 2, 5, 98)
+    check("buy near inner edge still in pocket", ok, True)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 98, 2, 5, 98)
+    check("buy at inner 98 blocked", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 99, 2, 5, 98)
+    check("buy in dead zone blocked", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 95, 2, 5, 98)
+    check("buy at outer 95 blocked", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 94, 2, 5, 98)
+    check("buy outside 5% blocked", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 96, 2, 5, 103)
+    check("buy blocked when prev close is above VWAP", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 96, 2, 5, 100)
+    check("buy blocked when prev close equals VWAP", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("BUY", 100, 96, 2, 5)
+    check("buy blocked without prev close", ok, False)
 
-    ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 101, 2)
-    check("sell inside band", ok, True)
-    ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 100, 2)
-    check("sell at VWAP", ok, True)
-    ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 102.01, 2)
-    check("sell above band blocked", ok, False)
-    ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 99.99, 2)
-    check("sell below VWAP blocked", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 103, 2, 5, 104)
+    check("sell in 102-105 pocket from above", ok, True)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 102.5, 2, 5, 104)
+    check("sell near inner edge still in pocket", ok, True)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 102, 2, 5, 104)
+    check("sell at inner 102 blocked", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 101, 2, 5, 104)
+    check("sell in dead zone blocked", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 105, 2, 5, 104)
+    check("sell at outer 105 blocked", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 106, 2, 5, 104)
+    check("sell outside 5% blocked", ok, False)
+    ok, _, _ = fyers_service.passes_vwap_band_filter("SELL", 100, 103, 2, 5, 97)
+    check("sell blocked when prev close is below VWAP", ok, False)
+
+    ok, _, _ = fyers_service.passes_vwap_band_filter(
+        "BUY", 100, 96, 2, 5, require_direction=False
+    )
+    check("pending pocket check ignores direction", ok, True)
 
     check(
         "flat book is not SELL when volume diff is 0",
@@ -384,19 +412,19 @@ def test_vwap_band_math() -> None:
 def test_vwap_band_gate_on_tick() -> None:
     section("VWAP-on entries are limits at live ask (buy) / bid (sell)")
     orig = fyers_service.get_vwap_with_meta
-    fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(98)
     turn_vwap(True)
     BROKER.reset()
     scanner_bias("BUY")
-    set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=103.0)
-    se._tick()
-    check("buy blocked when LTP is above VWAP", len(BROKER.legs("LIMIT", "entry")), 0)
-    check("no market entry while blocked", len(BROKER.legs("MARKET")), 0)
-
     set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=99.0)
     se._tick()
+    check("buy blocked when LTP is in the 2% dead zone", len(BROKER.legs("LIMIT", "entry")), 0)
+    check("no market entry while blocked", len(BROKER.legs("MARKET")), 0)
+
+    set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=96.0)
+    se._tick()
     entries = BROKER.legs("LIMIT", "entry")
-    check("buy limit sent when LTP is in 98-100", len(entries), 1)
+    check("buy limit sent when LTP is in 95-98 and prev close is below VWAP", len(entries), 1)
     check("buy limit price is the live ask", entries[0]["limit_price"], 100.15)
     check("buy limit is a buy", entries[0]["side"], 1)
     check("no market entry on VWAP path", len(BROKER.legs("MARKET")), 0)
@@ -408,7 +436,7 @@ def test_vwap_band_gate_on_tick() -> None:
     se._tick()
     check("no duplicate limit while pending", len(BROKER.legs("LIMIT", "entry")), 1)
 
-    BROKER.fill(entries[0]["id"], 99.0)
+    BROKER.fill(entries[0]["id"], 96.0)
     se._tick()
     check("target placed after fill", len(BROKER.legs("LIMIT", "target")), 1)
     check("sl placed after fill", len(BROKER.legs("SL-L")), 1)
@@ -425,14 +453,14 @@ def test_vwap_band_gate_on_tick() -> None:
 def test_vwap_sell_limit_at_band_high() -> None:
     section("VWAP sell limit sits at the live bid")
     orig = fyers_service.get_vwap_with_meta
-    fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(103)
     turn_vwap(True)
     BROKER.reset()
     scanner_bias("SELL")
-    set_depth("BETA", 100, 1000, 100.10, fill_price=100.00, ltp=101.0)
+    set_depth("BETA", 100, 1000, 100.10, fill_price=100.00, ltp=103.0)
     se._tick()
     entries = BROKER.legs("LIMIT", "entry")
-    check("sell limit sent when LTP is in 100-102", len(entries), 1)
+    check("sell limit sent when prev close is above VWAP and LTP is 103", len(entries), 1)
     check("sell limit price is the live bid", entries[0]["limit_price"], 100.05)
     check("sell limit is a sell", entries[0]["side"], -1)
     check("no market sell on VWAP path", len(BROKER.legs("MARKET")), 0)
@@ -448,17 +476,17 @@ def test_vwap_sell_limit_at_band_high() -> None:
 def test_unfilled_limit_cancelled_when_ltp_leaves_band() -> None:
     section("Unfilled VWAP limit is cancelled when LTP leaves the band")
     orig = fyers_service.get_vwap_with_meta
-    fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(98)
     turn_vwap(True)
     BROKER.reset()
     scanner_bias("BUY")
-    set_depth("GAMMA", 1000, 100, 100.10, fill_price=100.00, ltp=99.0)
+    set_depth("GAMMA", 1000, 100, 100.10, fill_price=100.00, ltp=96.0)
     se._tick()
     entries = BROKER.legs("LIMIT", "entry")
-    check("limit parked inside the band", len(entries), 1)
+    check("limit parked inside the buy pocket", len(entries), 1)
     trade_id = repository.get_open_trade()["id"]
 
-    set_depth("GAMMA", 1000, 100, 100.10, fill_price=100.00, ltp=103.0)
+    set_depth("GAMMA", 1000, 100, 100.10, fill_price=100.00, ltp=99.0)
     se._tick()
     closed = repository.get_trade(trade_id)
     check("resting limit cancelled", entries[0]["id"] in BROKER.cancelled, True)
@@ -478,11 +506,11 @@ def test_unfilled_limit_cancelled_when_ltp_leaves_band() -> None:
 def test_scanner_neutral_blocks_even_when_depth_and_vwap_pass() -> None:
     section("Scanner NEUTRAL blocks a watchlist BUY that is inside the VWAP band")
     orig = fyers_service.get_vwap_with_meta
-    fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(98)
     turn_vwap(True)
     BROKER.reset()
     flatten_scanner()
-    set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=99.0)
+    set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=96.0)
     se._tick()
     check("no limit while scanner is neutral", len(BROKER.legs("LIMIT", "entry")), 0)
     check("no market while scanner is neutral", len(BROKER.legs("MARKET")), 0)
@@ -496,12 +524,12 @@ def test_scanner_neutral_blocks_even_when_depth_and_vwap_pass() -> None:
 def test_watchlist_depth_below_threshold_blocks() -> None:
     section("Watchlist depth below volume diff blocks even when scanner+VWAP pass")
     orig = fyers_service.get_vwap_with_meta
-    fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(98)
     turn_vwap(True)
     BROKER.reset()
     scanner_bias("BUY")
     # ALPHA volume_difference is 500; buy_diff 100 is not enough
-    set_depth("ALPHA", 200, 100, 100.10, fill_price=100.00, ltp=99.0)
+    set_depth("ALPHA", 200, 100, 100.10, fill_price=100.00, ltp=96.0)
     se._tick()
     check("no limit when watchlist depth fails", len(BROKER.legs("LIMIT", "entry")), 0)
     check("no market when watchlist depth fails", len(BROKER.legs("MARKET")), 0)
@@ -513,15 +541,78 @@ def test_watchlist_depth_below_threshold_blocks() -> None:
 def test_scanner_sell_blocks_watchlist_buy() -> None:
     section("Scanner SELL majority blocks a watchlist BUY inside the VWAP band")
     orig = fyers_service.get_vwap_with_meta
-    fyers_service.get_vwap_with_meta = lambda *a, **k: {"vwap": 100.0}
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(98)
     turn_vwap(True)
     BROKER.reset()
     scanner_bias("SELL")
-    set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=99.0)
+    set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=96.0)
     se._tick()
     check("no buy limit against a SELL scanner", len(BROKER.legs("LIMIT", "entry")), 0)
     check("no market buy against a SELL scanner", len(BROKER.legs("MARKET")), 0)
     disarm("ALPHA", 100.10)
+    fyers_service.get_vwap_with_meta = orig
+    turn_vwap(False)
+    scanner_bias("BUY")
+
+
+def test_sell_inside_band_does_not_wait_for_vwap_cross() -> None:
+    section("SELL fires when prev close is above VWAP and LTP is in 102-105")
+    orig = fyers_service.get_vwap_with_meta
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(103)
+    turn_vwap(True)
+    BROKER.reset()
+    scanner_bias("SELL")
+    set_depth("BETA", 100, 1000, 100.10, fill_price=100.00, ltp=104.0)
+    se._tick()
+    entries = BROKER.legs("LIMIT", "entry")
+    check("sell sent in the 102-105 pocket", len(entries), 1)
+    check("sell limit is the live bid", entries[0]["limit_price"], 100.05)
+    se.square_off_all_open_trades("STOP")
+    repository.delete_trades(today_only=True)
+    disarm("BETA", 100.10)
+    fyers_service.get_vwap_with_meta = orig
+    turn_vwap(False)
+
+
+def test_prev_close_direction_required() -> None:
+    section("Previous close vs VWAP decides buy vs sell approach")
+    orig = fyers_service.get_vwap_with_meta
+    turn_vwap(True)
+    BROKER.reset()
+
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(103)
+    scanner_bias("SELL")
+    set_depth("BETA", 100, 1000, 100.10, fill_price=100.00, ltp=103.0)
+    se._tick()
+    check("sell when prev close is above VWAP and LTP is 103", len(BROKER.legs("LIMIT", "entry")), 1)
+    se.square_off_all_open_trades("STOP")
+    repository.delete_trades(today_only=True)
+    disarm("BETA", 100.10)
+    BROKER.reset()
+
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(97)
+    set_depth("BETA", 100, 1000, 100.10, fill_price=100.00, ltp=103.0)
+    se._tick()
+    check("sell blocked when prev close is below VWAP", len(BROKER.legs("LIMIT", "entry")), 0)
+    disarm("BETA", 100.10)
+    BROKER.reset()
+
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(97)
+    scanner_bias("BUY")
+    set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=96.0)
+    se._tick()
+    check("buy when prev close is below VWAP and LTP is 96", len(BROKER.legs("LIMIT", "entry")), 1)
+    se.square_off_all_open_trades("STOP")
+    repository.delete_trades(today_only=True)
+    disarm("ALPHA", 100.10)
+    BROKER.reset()
+
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(103)
+    set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=96.0)
+    se._tick()
+    check("buy blocked when prev close is above VWAP", len(BROKER.legs("LIMIT", "entry")), 0)
+    disarm("ALPHA", 100.10)
+
     fyers_service.get_vwap_with_meta = orig
     turn_vwap(False)
     scanner_bias("BUY")
@@ -766,6 +857,8 @@ def main() -> int:
         test_scanner_neutral_blocks_even_when_depth_and_vwap_pass()
         test_watchlist_depth_below_threshold_blocks()
         test_scanner_sell_blocks_watchlist_buy()
+        test_sell_inside_band_does_not_wait_for_vwap_cross()
+        test_prev_close_direction_required()
         first_trade = test_buy_target_hit(app)
         test_same_symbol_reentry_after_exit()
         test_sell_stop_hit()

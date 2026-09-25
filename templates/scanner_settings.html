@@ -4,10 +4,8 @@
 
 {% block content %}
 <header class="header">
-  <div class="header__brand">
-    <span class="header__logo"></span>
-    <h1>Scanner</h1>
-  </div>
+  <p class="header__eyebrow">Control / Macro bias</p>
+  <h1>Scanner</h1>
   <p class="header__subtitle">
     Depth majority bias — floor(n/2)+1 BUY or SELL signals on scanner symbols allow that side only on the watchlist
   </p>
@@ -73,6 +71,7 @@
   </section>
 
   <section class="toolbar toolbar--symbols">
+    <h2 class="section-title">Scanner universe</h2>
     <button type="button" id="btn-add" class="btn btn--primary" data-log-label="Click: Add Scanner Symbol">+ Add Symbol</button>
     <button type="button" id="btn-download-csv" class="btn btn--outline" data-log-label="Click: Download Scanner CSV">Download CSV</button>
     <button type="button" id="btn-load-csv" class="btn btn--outline" data-log-label="Click: Load Scanner CSV">Load CSV</button>

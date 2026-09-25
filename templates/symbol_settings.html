@@ -4,10 +4,8 @@
 
 {% block content %}
 <header class="header">
-  <div class="header__brand">
-    <span class="header__logo"></span>
-    <h1>Symbol Settings</h1>
-  </div>
+  <p class="header__eyebrow">Control / Watchlist</p>
+  <h1>Symbol Settings</h1>
   <p class="header__subtitle">Manage symbols, time frames, stop loss &amp; target</p>
 </header>
 
@@ -78,6 +76,7 @@
 
 <main class="main">
   <section class="toolbar toolbar--symbols">
+    <h2 class="section-title">Watchlist</h2>
     <button type="button" id="btn-add" class="btn btn--primary" data-log-label="Click: Add Symbol">+ Add Symbol</button>
     <button type="button" id="btn-download-csv" class="btn btn--outline" data-log-label="Click: Download CSV">Download CSV</button>
     <button type="button" id="btn-load-csv" class="btn btn--outline" data-log-label="Click: Load CSV">Load CSV</button>
@@ -93,13 +92,14 @@
           <th>Volume Diff</th>
           <th>Stop Loss %</th>
           <th>Target %</th>
-          <th>Entry Buffer %</th>
+          <th>Range Down %</th>
+          <th>Range Up %</th>
           <th class="col-actions">Actions</th>
         </tr>
       </thead>
       <tbody id="symbols-tbody">
         <tr class="empty-row" id="empty-row">
-          <td colspan="7">No symbols yet. Click &quot;Add Symbol&quot; to create one.</td>
+          <td colspan="8">No symbols yet. Click &quot;Add Symbol&quot; to create one.</td>
         </tr>
       </tbody>
     </table>
@@ -108,10 +108,11 @@
   <section class="market-book" id="market-book-section" aria-live="polite">
     <header class="market-book__header">
       <div>
-        <h2 class="market-book__title">Live order book totals</h2>
+        <h2 class="market-book__title"><span class="live-dot" aria-hidden="true"></span>Live order book totals</h2>
         <p class="market-book__subtitle">
           All three must pass on the same tick: scanner majority, watchlist
-          depth (buy/sell qty vs volume diff), then VWAP band if the switch
+          depth (buy/sell qty vs volume diff), then the VWAP entry pocket
+          (range down / range up) plus previous close vs VWAP if the switch
           is on. Session hours
           <span id="market-book-hours">—</span>.
         </p>
@@ -188,10 +189,17 @@
           <input type="number" id="target" name="target_pct" required min="0.01" step="0.01" placeholder="2.0">
         </div>
       </div>
-      <div class="field">
-        <label for="entry-buffer">Entry Buffer (%)</label>
-        <input type="number" id="entry-buffer" name="entry_buffer_pct" required min="0" step="0.01" placeholder="2"
-               title="BUY: LTP between VWAP×(1−buffer) and VWAP. SELL: LTP between VWAP and VWAP×(1+buffer).">
+      <div class="field-row">
+        <div class="field">
+          <label for="entry-range-down">Entry range down (%)</label>
+          <input type="number" id="entry-range-down" name="entry_range_down_pct" required min="0" step="0.01" placeholder="2"
+                 title="Dead zone next to VWAP. No trade this close to VWAP. Example: 2% → 98–102 is blocked.">
+        </div>
+        <div class="field">
+          <label for="entry-range-up">Entry range up (%)</label>
+          <input type="number" id="entry-range-up" name="entry_range_up_pct" required min="0.01" step="0.01" placeholder="5"
+                 title="Outer cap. BUY pocket is between up% and down% below VWAP; SELL pocket is between down% and up% above VWAP.">
+        </div>
       </div>
       <p class="form-error" id="form-error" hidden></p>
       <footer class="modal__footer">

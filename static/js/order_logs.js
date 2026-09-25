@@ -313,13 +313,20 @@ function fillTradeModal(trade) {
     detailEntryLtp.textContent = formatNum(trade.entry_ltp);
   }
   if (detailEntryBuffer) {
-    detailEntryBuffer.textContent =
-      trade.entry_buffer_pct != null ? `${formatNum(trade.entry_buffer_pct)}%` : "—";
+    const down = trade.entry_range_down_pct ?? trade.entry_buffer_pct;
+    const up = trade.entry_range_up_pct;
+    if (down != null && up != null) {
+      detailEntryBuffer.textContent = `${formatNum(down)}% / ${formatNum(up)}%`;
+    } else if (down != null) {
+      detailEntryBuffer.textContent = `${formatNum(down)}%`;
+    } else {
+      detailEntryBuffer.textContent = "—";
+    }
   }
   if (detailVwapBand) {
     if (trade.vwap_band_low != null && trade.vwap_band_high != null) {
-      const low = formatNum(trade.side === "BUY" ? trade.vwap_band_low : trade.vwap);
-      const high = formatNum(trade.side === "BUY" ? trade.vwap : trade.vwap_band_high);
+      const low = formatNum(trade.vwap_band_low);
+      const high = formatNum(trade.vwap_band_high);
       detailVwapBand.textContent = `${low} – ${high}`;
     } else {
       detailVwapBand.textContent = "—";

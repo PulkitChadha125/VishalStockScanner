@@ -1131,28 +1131,85 @@ def get_vwap(symbol_name: str, time_frame: str) -> float | None:
     return meta.get("vwap") if meta else None
 
 
-def vwap_band_prices(vwap: float, buffer_pct: float) -> tuple[float, float]:
-    """Lower/upper prices for the entry buffer around session VWAP."""
+DEFAULT_RANGE_DOWN_PCT = 2.0
+DEFAULT_RANGE_UP_PCT = 5.0
+
+
+def symbol_entry_ranges(sym: dict | None) -> tuple[float, float]:
+    """Per-symbol inner dead zone % and outer cap %."""
+    if not sym:
+        return DEFAULT_RANGE_DOWN_PCT, DEFAULT_RANGE_UP_PCT
+    down_raw = sym.get("entry_range_down_pct")
+    if down_raw is None:
+        down_raw = sym.get("entry_buffer_pct", DEFAULT_RANGE_DOWN_PCT)
+    up_raw = sym.get("entry_range_up_pct", DEFAULT_RANGE_UP_PCT)
+    try:
+        down = max(float(down_raw or 0), 0.0)
+    except (TypeError, ValueError):
+        down = DEFAULT_RANGE_DOWN_PCT
+    try:
+        up = max(float(up_raw or 0), 0.0)
+    except (TypeError, ValueError):
+        up = DEFAULT_RANGE_UP_PCT
+    return down, up
+
+
+def vwap_entry_pocket_prices(
+    signal: str,
+    vwap: float,
+    range_down_pct: float,
+    range_up_pct: float,
+) -> tuple[float, float] | None:
+    """
+    Exclusive LTP pocket for one side.
+
+    SELL: VWAP*(1+down%) < LTP < VWAP*(1+up%)   e.g. 102 < LTP < 105
+    BUY:  VWAP*(1-up%)  < LTP < VWAP*(1-down%)  e.g.  95 < LTP <  98
+    """
     value = float(vwap)
-    buffer = max(float(buffer_pct or 0), 0.0)
-    low = value * (1 - buffer / 100.0)
-    high = value * (1 + buffer / 100.0)
-    return low, high
+    down = max(float(range_down_pct or 0), 0.0)
+    up = max(float(range_up_pct or 0), 0.0)
+    if up <= down:
+        return None
+    if signal == "SELL":
+        return value * (1 + down / 100.0), value * (1 + up / 100.0)
+    if signal == "BUY":
+        return value * (1 - up / 100.0), value * (1 - down / 100.0)
+    return None
+
+
+def vwap_band_prices(
+    vwap: float,
+    range_down_pct: float,
+    range_up_pct: float | None = None,
+) -> tuple[float, float]:
+    """Outer envelope from VWAP. Prefer vwap_entry_pocket_prices for entries."""
+    value = float(vwap)
+    if range_up_pct is None:
+        buffer = max(float(range_down_pct or 0), 0.0)
+        return value * (1 - buffer / 100.0), value * (1 + buffer / 100.0)
+    up = max(float(range_up_pct or 0), 0.0)
+    return value * (1 - up / 100.0), value * (1 + up / 100.0)
 
 
 def passes_vwap_band_filter(
     signal: str,
     vwap: float | None,
     ltp: float | None,
-    buffer_pct: float,
+    range_down_pct: float,
+    range_up_pct: float,
+    prev_close: float | None = None,
+    *,
+    require_direction: bool = True,
 ) -> tuple[bool, str, dict]:
     """
-    Live LTP vs session VWAP band. Checked every engine tick.
+    Live LTP must sit in the side pocket (not the dead zone next to VWAP),
+    and the last completed candle must show the approach direction:
 
-    BUY:  VWAP * (1 - buffer%) <= LTP <= VWAP
-    SELL: VWAP <= LTP <= VWAP * (1 + buffer%)
+      BUY  — previous close below VWAP,  outer < LTP < inner
+      SELL — previous close above VWAP,  inner < LTP < outer
 
-    Example: VWAP 100, buffer 2% -> BUY 98–100, SELL 100–102.
+    Example: VWAP 100, down 2%, up 5%, prev close 103, LTP 103 → SELL.
     """
     if vwap is None:
         return False, "VWAP unavailable", {}
@@ -1172,41 +1229,89 @@ def passes_vwap_band_filter(
     if ltp_f <= 0:
         return False, "LTP unavailable", {"vwap": vwap_f}
 
-    low, high = vwap_band_prices(vwap_f, buffer_pct)
+    down = max(float(range_down_pct or 0), 0.0)
+    up = max(float(range_up_pct or 0), 0.0)
+    pocket = vwap_entry_pocket_prices(signal, vwap_f, down, up)
+    prev_f = None
+    if prev_close is not None:
+        try:
+            parsed = float(prev_close)
+            if parsed > 0:
+                prev_f = parsed
+        except (TypeError, ValueError):
+            prev_f = None
     details = {
         "vwap": vwap_f,
         "ltp": ltp_f,
-        "entry_buffer_pct": float(buffer_pct or 0),
-        "vwap_band_low": low,
-        "vwap_band_high": high,
+        "prev_close": prev_f,
+        "entry_buffer_pct": down,
+        "entry_range_down_pct": down,
+        "entry_range_up_pct": up,
+        "vwap_band_low": pocket[0] if pocket else None,
+        "vwap_band_high": pocket[1] if pocket else None,
+        "band_side": "buy" if signal == "BUY" else "sell" if signal == "SELL" else None,
     }
-    if signal == "BUY":
-        details["band_side"] = "buy"
-        if low <= ltp_f <= vwap_f:
-            details["vwap_band_passed"] = True
-            return True, "", details
+    if signal not in ("BUY", "SELL"):
+        return False, "Unknown signal", details
+    if pocket is None:
         return (
             False,
             (
-                f"BUY blocked: LTP {ltp_f:.2f} outside VWAP band "
-                f"{low:.2f}–{vwap_f:.2f} (vwap={vwap_f:.2f})"
+                f"{signal} blocked: entry range up ({up:g}%) must be greater "
+                f"than entry range down ({down:g}%)"
             ),
             details,
         )
-    if signal == "SELL":
-        details["band_side"] = "sell"
-        if vwap_f <= ltp_f <= high:
-            details["vwap_band_passed"] = True
-            return True, "", details
+
+    low, high = pocket
+    if not (low < ltp_f < high):
+        inner = vwap_f * (1 - down / 100.0) if signal == "BUY" else vwap_f * (1 + down / 100.0)
+        if signal == "BUY" and ltp_f >= inner:
+            reason = (
+                f"BUY blocked: LTP {ltp_f:.2f} is inside the {down:g}% dead zone "
+                f"(need {low:.2f} < LTP < {high:.2f}, vwap={vwap_f:.2f})"
+            )
+        elif signal == "SELL" and ltp_f <= inner:
+            reason = (
+                f"SELL blocked: LTP {ltp_f:.2f} is inside the {down:g}% dead zone "
+                f"(need {low:.2f} < LTP < {high:.2f}, vwap={vwap_f:.2f})"
+            )
+        else:
+            reason = (
+                f"{signal} blocked: LTP {ltp_f:.2f} outside pocket "
+                f"{low:.2f}–{high:.2f} (vwap={vwap_f:.2f})"
+            )
+        return False, reason, details
+
+    if not require_direction:
+        details["vwap_band_passed"] = True
+        return True, "", details
+
+    if prev_f is None:
+        return False, "Previous close unavailable", details
+
+    if signal == "BUY" and prev_f >= vwap_f:
         return (
             False,
             (
-                f"SELL blocked: LTP {ltp_f:.2f} outside VWAP band "
-                f"{vwap_f:.2f}–{high:.2f} (vwap={vwap_f:.2f})"
+                f"BUY blocked: previous close {prev_f:.2f} is not below "
+                f"VWAP {vwap_f:.2f} (need approach from below)"
             ),
             details,
         )
-    return False, "Unknown signal", details
+    if signal == "SELL" and prev_f <= vwap_f:
+        return (
+            False,
+            (
+                f"SELL blocked: previous close {prev_f:.2f} is not above "
+                f"VWAP {vwap_f:.2f} (need approach from above)"
+            ),
+            details,
+        )
+
+    details["vwap_band_passed"] = True
+    details["approach"] = "from_below" if signal == "BUY" else "from_above"
+    return True, "", details
 
 
 def live_entry_limit_price(

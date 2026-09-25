@@ -44,14 +44,22 @@ def create_symbol(
     stop_loss_pct: float,
     target_pct: float,
     tsl: float = 0,
-    entry_buffer_pct: float = 2,
+    entry_range_down_pct: float = 2,
+    entry_range_up_pct: float = 5,
+    entry_buffer_pct: float | None = None,
 ) -> dict:
+    down = float(
+        entry_range_down_pct if entry_buffer_pct is None else entry_buffer_pct
+    )
+    up = float(entry_range_up_pct)
     with get_connection() as conn:
         cur = conn.execute(
             """
             INSERT INTO symbol_settings
-                (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, tsl, entry_buffer_pct)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (symbol_name, time_frame, volume_difference, stop_loss_pct,
+                 target_pct, tsl, entry_buffer_pct, entry_range_down_pct,
+                 entry_range_up_pct)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol_name,
@@ -60,7 +68,9 @@ def create_symbol(
                 stop_loss_pct,
                 target_pct,
                 tsl,
-                entry_buffer_pct,
+                down,
+                down,
+                up,
             ),
         )
         conn.commit()
@@ -76,14 +86,22 @@ def update_symbol(
     stop_loss_pct: float,
     target_pct: float,
     tsl: float = 0,
-    entry_buffer_pct: float = 2,
+    entry_range_down_pct: float = 2,
+    entry_range_up_pct: float = 5,
+    entry_buffer_pct: float | None = None,
 ) -> dict | None:
+    down = float(
+        entry_range_down_pct if entry_buffer_pct is None else entry_buffer_pct
+    )
+    up = float(entry_range_up_pct)
     with get_connection() as conn:
         cur = conn.execute(
             """
             UPDATE symbol_settings
             SET symbol_name = ?, time_frame = ?, volume_difference = ?,
-                stop_loss_pct = ?, target_pct = ?, tsl = ?, entry_buffer_pct = ?
+                stop_loss_pct = ?, target_pct = ?, tsl = ?,
+                entry_buffer_pct = ?, entry_range_down_pct = ?,
+                entry_range_up_pct = ?
             WHERE id = ?
             """,
             (
@@ -93,7 +111,9 @@ def update_symbol(
                 stop_loss_pct,
                 target_pct,
                 tsl,
-                entry_buffer_pct,
+                down,
+                down,
+                up,
                 symbol_id,
             ),
         )
@@ -121,8 +141,10 @@ def replace_all_symbols(rows: list[dict]) -> list[dict]:
             conn.execute(
                 """
                 INSERT INTO symbol_settings
-                    (symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, tsl, entry_buffer_pct)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (symbol_name, time_frame, volume_difference, stop_loss_pct,
+                     target_pct, tsl, entry_buffer_pct, entry_range_down_pct,
+                     entry_range_up_pct)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["symbol_name"],
@@ -131,7 +153,9 @@ def replace_all_symbols(rows: list[dict]) -> list[dict]:
                     row["stop_loss_pct"],
                     row["target_pct"],
                     row.get("tsl", 0),
-                    float(row.get("entry_buffer_pct", 2) or 2),
+                    float(row.get("entry_range_down_pct", row.get("entry_buffer_pct", 2)) or 2),
+                    float(row.get("entry_range_down_pct", row.get("entry_buffer_pct", 2)) or 2),
+                    float(row.get("entry_range_up_pct", 5) or 5),
                 ),
             )
         conn.commit()

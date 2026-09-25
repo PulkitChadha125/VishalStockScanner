@@ -41,14 +41,17 @@ def _parse_payload():
         volume_difference = float(data["volume_difference"])
         stop_loss_pct = float(data["stop_loss_pct"])
         target_pct = float(data["target_pct"])
-        entry_buffer_pct = float(data.get("entry_buffer_pct", 2))
+        down_raw = data.get("entry_range_down_pct", data.get("entry_buffer_pct", 2))
+        up_raw = data.get("entry_range_up_pct", 5)
+        entry_range_down_pct = float(down_raw)
+        entry_range_up_pct = float(up_raw)
     except (TypeError, ValueError):
         return (
             None,
             jsonify(
                 {
                     "error": (
-                        "Volume difference, stop loss, target and entry buffer "
+                        "Volume difference, stop loss, target and entry ranges "
                         "must be numbers."
                     )
                 }
@@ -60,8 +63,20 @@ def _parse_payload():
         return None, jsonify({"error": "Volume difference cannot be negative."}), 400
     if stop_loss_pct <= 0 or target_pct <= 0:
         return None, jsonify({"error": "Stop loss and target must be positive."}), 400
-    if entry_buffer_pct < 0:
-        return None, jsonify({"error": "Entry buffer cannot be negative."}), 400
+    if entry_range_down_pct < 0 or entry_range_up_pct < 0:
+        return None, jsonify({"error": "Entry ranges cannot be negative."}), 400
+    if entry_range_up_pct <= entry_range_down_pct:
+        return (
+            None,
+            jsonify(
+                {
+                    "error": (
+                        "Entry range up must be greater than entry range down."
+                    )
+                }
+            ),
+            400,
+        )
 
     return (
         symbol_name,
@@ -69,7 +84,8 @@ def _parse_payload():
         volume_difference,
         stop_loss_pct,
         target_pct,
-        entry_buffer_pct,
+        entry_range_down_pct,
+        entry_range_up_pct,
     ), None, None
 
 
@@ -186,9 +202,14 @@ def market_book_snapshot():
         if signal and vwap_enabled:
             vwap_meta = fyers_service.get_vwap_with_meta(name, sym["time_frame"])
             vwap = vwap_meta.get("vwap") if vwap_meta else None
-            buffer_pct = float(sym.get("entry_buffer_pct") or 0)
+            range_down, range_up = fyers_service.symbol_entry_ranges(sym)
             vwap_ok, vwap_reason, _ = fyers_service.passes_vwap_band_filter(
-                signal, vwap, ltp, buffer_pct
+                signal,
+                vwap,
+                ltp,
+                range_down,
+                range_up,
+                vwap_meta.get("prev_close") if vwap_meta else None,
             )
             if vwap_ok:
                 vwap_signal = signal
@@ -334,14 +355,23 @@ def create_symbol():
     if err_response is not None:
         return err_response, status
 
-    symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, entry_buffer_pct = parsed
+    (
+        symbol_name,
+        time_frame,
+        volume_difference,
+        stop_loss_pct,
+        target_pct,
+        entry_range_down_pct,
+        entry_range_up_pct,
+    ) = parsed
     symbol = repository.create_symbol(
         symbol_name,
         time_frame,
         volume_difference,
         stop_loss_pct,
         target_pct,
-        entry_buffer_pct=entry_buffer_pct,
+        entry_range_down_pct=entry_range_down_pct,
+        entry_range_up_pct=entry_range_up_pct,
     )
     fyers_service.sync_market_websocket()
     _log_server_activity(
@@ -357,7 +387,15 @@ def update_symbol(symbol_id):
     if err_response is not None:
         return err_response, status
 
-    symbol_name, time_frame, volume_difference, stop_loss_pct, target_pct, entry_buffer_pct = parsed
+    (
+        symbol_name,
+        time_frame,
+        volume_difference,
+        stop_loss_pct,
+        target_pct,
+        entry_range_down_pct,
+        entry_range_up_pct,
+    ) = parsed
     symbol = repository.update_symbol(
         symbol_id,
         symbol_name,
@@ -365,7 +403,8 @@ def update_symbol(symbol_id):
         volume_difference,
         stop_loss_pct,
         target_pct,
-        entry_buffer_pct=entry_buffer_pct,
+        entry_range_down_pct=entry_range_down_pct,
+        entry_range_up_pct=entry_range_up_pct,
     )
     if not symbol:
         return jsonify({"error": "Symbol not found."}), 404
