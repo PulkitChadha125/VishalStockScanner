@@ -188,13 +188,7 @@ def market_book_snapshot():
 
         book_buy = float(depth.get("bid_qty") or 0)
         book_sell = float(depth.get("ask_qty") or 0)
-        sell_diff = book_sell - book_buy
-        buy_diff = book_buy - book_sell
-        signal = None
-        if sell_diff >= threshold:
-            signal = "SELL"
-        elif buy_diff >= threshold:
-            signal = "BUY"
+        signal = scanner_service.evaluate_depth_signal(book_buy, book_sell, threshold)
         vwap_signal = None
         vwap_ok = None
         vwap_reason = None

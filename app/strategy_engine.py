@@ -474,8 +474,18 @@ def _vwap_allows_entry(sym: dict, signal: str) -> tuple[bool, dict]:
     return ok, details
 
 
-def _entry_candidate(sym: dict, depth: dict) -> dict | None:
-    """Volume signal + VWAP confluence for one symbol."""
+def _entry_candidate(
+    sym: dict,
+    depth: dict,
+    scanner_bias: str | None = None,
+    scanner_total: int = 0,
+) -> dict | None:
+    """
+    Gate order for one watchlist symbol:
+      1. This symbol's book vs its volume difference
+      2. Scanner majority must be the same side
+      3. VWAP pocket + previous close (if the switch is on)
+    """
     if not depth or depth.get("error"):
         return None
     if not fyers_service.has_book_totals(depth):
@@ -486,6 +496,9 @@ def _entry_candidate(sym: dict, depth: dict) -> dict | None:
     volume_diff = float(sym["volume_difference"])
     signal = _evaluate_signal(bid_qty, ask_qty, volume_diff)
     if not signal:
+        return None
+
+    if scanner_total and signal != scanner_bias:
         return None
 
     vwap_ok, crossover = _vwap_allows_entry(sym, signal)
@@ -602,9 +615,33 @@ def _enter_trade(symbol: dict, signal: str, depth: dict):
 
     sl_price, tgt_price = _calc_sl_target(entry_price, side, sl_pct, tgt_pct)
 
+    live = fyers_service.get_market_depth(symbol["symbol_name"])
+    if live and not live.get("error") and fyers_service.has_book_totals(live):
+        depth = live
+
     book_buy = float(depth.get("bid_qty") or 0)
     book_sell = float(depth.get("ask_qty") or 0)
     volume_threshold = float(symbol["volume_difference"])
+    live_signal = _evaluate_signal(book_buy, book_sell, volume_threshold)
+    if live_signal != signal:
+        print(
+            f"[ENTRY] {symbol['symbol_name']} {signal} blocked — live book is "
+            f"buy={book_buy:.0f} sell={book_sell:.0f} "
+            f"(need {volume_threshold:.0f} imbalance, signal={live_signal or 'NONE'})",
+            flush=True,
+        )
+        _log_app(
+            f"Entry skipped — live depth is not {signal} on {symbol['symbol_name']}",
+            {
+                "signal": signal,
+                "live_signal": live_signal,
+                "book_buy_qty": book_buy,
+                "book_sell_qty": book_sell,
+                "volume_difference": volume_threshold,
+            },
+        )
+        return
+
     buy_diff = book_buy - book_sell
     sell_diff = book_sell - book_buy
     volume_trigger = buy_diff if signal == "BUY" else sell_diff
@@ -1867,9 +1904,13 @@ def _scan_for_entry():
         buy_diff = bid_qty - ask_qty
 
         signal = _evaluate_signal(bid_qty, ask_qty, volume_diff)
+        scanner_ok = bool(
+            signal
+            and (not scanner_info.get("total") or signal == scanner_bias)
+        )
         vwap_ok = False
         vwap_note = ""
-        if signal:
+        if signal and scanner_ok:
             if _vwap_enabled():
                 vwap_ok, crossover = _vwap_allows_entry(sym, signal)
                 if crossover:
@@ -1887,6 +1928,8 @@ def _scan_for_entry():
             else:
                 vwap_ok = True
                 vwap_note = " vwap=off"
+        elif signal and not scanner_ok:
+            vwap_note = f" scanner={scanner_bias or 'NEUTRAL'} blocks {signal}"
 
         print(
             (
@@ -1900,11 +1943,10 @@ def _scan_for_entry():
             flush=True,
         )
 
-        candidate = _entry_candidate(sym, depth)
-        if candidate and (
-            not scanner_info.get("total")
-            or candidate["signal"] == scanner_bias
-        ):
+        candidate = _entry_candidate(
+            sym, depth, scanner_bias, int(scanner_info.get("total") or 0)
+        )
+        if candidate:
             candidates.append(candidate)
 
     if not candidates:
@@ -1920,17 +1962,19 @@ def _scan_for_entry():
     depth = best["depth"]
 
     fresh = fyers_service.fetch_market_depth_immediate(sym["symbol_name"])
-    if fresh and not fresh.get("error") and fyers_service.has_book_totals(fresh):
-        recheck = _entry_candidate(sym, fresh)
-        if recheck:
-            depth = fresh
-            signal = recheck["signal"]
-        else:
-            print(
-                f"[ENTRY] {sym['symbol_name']}: fresh depth no longer passes — skipped",
-                flush=True,
-            )
-            return
+    if not fresh or fresh.get("error") or not fyers_service.has_book_totals(fresh):
+        fresh = fyers_service.get_market_depth(sym["symbol_name"])
+    recheck = _entry_candidate(
+        sym, fresh or {}, scanner_bias, int(scanner_info.get("total") or 0)
+    )
+    if not recheck or recheck["signal"] != signal:
+        print(
+            f"[ENTRY] {sym['symbol_name']}: live depth is not {signal} — skipped",
+            flush=True,
+        )
+        return
+    depth = recheck["depth"]
+    signal = recheck["signal"]
 
     scanner_ok, gate_info = scanner_service.evaluate_scanner_gate(signal)
     if not scanner_ok:

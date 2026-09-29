@@ -36,9 +36,10 @@ The strategy has two symbol lists:
 
 Each second during the trading window, the engine:
 
-1. Evaluates a **depth signal** for every scanner symbol and takes the **majority side**
-2. Scans watchlist symbols for **market depth** imbalance in that same direction
-3. Optionally applies a **VWAP entry pocket + previous-close direction** filter (toggle + per-symbol range down / range up)
+1. Checks **this watchlist symbol's market depth** (buy qty vs sell qty vs volume difference)
+2. If that book is BUY, only BUY is allowed next; if SELL, only SELL. Otherwise skip the symbol.
+3. Confirms the **scanner majority** is the same side
+4. Optionally applies a **VWAP entry pocket + previous-close direction** filter
 4. Sizes the order from **account balance × leverage**
 5. Enters at most **one trade at a time**, respecting the daily cap
 6. Parks the **target and stop loss as live orders at the broker** and cancels the loser when one fills
@@ -546,32 +547,32 @@ Scanner bias is recomputed **every tick** — not once at open.
 - Watchlist + scanner bias: every **1 second** while the strategy is running and inside the trading window.
 - Scanner UI status: polled every **3 seconds** on `/scanner`.
 
-### Step 1 — Scanner live bias (continuous)
+### Step 1 — Watchlist market depth (this symbol)
 
-For each symbol in `scanner_settings`, using its own `volume_difference`:
+Using the watchlist symbol's own `volume_difference` (e.g. 10,000):
 
 ```
-buy_diff  = total_bid_qty - total_ask_qty
-sell_diff = total_ask_qty - total_bid_qty
+buy_diff  = total_buy_qty - total_sell_qty
+sell_diff = total_sell_qty - total_buy_qty
 
-buy_diff  >= volume_difference  ->  BUY signal
-sell_diff >= volume_difference  ->  SELL signal
-otherwise                       ->  no signal
+buy_diff  >= volume_difference  ->  BUY path only
+sell_diff >= volume_difference  ->  SELL path only
+otherwise                       ->  no trade on this symbol
 ```
 
-**Majority** = `floor(n/2) + 1` of all scanner symbols (11 of 20, 6 of 10, 51 of 100).
+If buy qty is already greater, a SELL **cannot** open on that symbol. If sell qty is already greater, a BUY **cannot** open. Live book totals are used at order time (WebSocket first; REST only if WS totals are missing). Stale REST cannot override a live BUY/SELL book.
+
+### Step 2 — Scanner live bias
+
+The scanner list is scored with the same depth formula. **Majority** = `floor(n/2) + 1` of all scanner symbols (6 of 10, 11 of 20).
 
 | Condition | Allowed entries |
 |-----------|-----------------|
-| `buy_count >= majority` | **BUY only** on watchlist |
-| `sell_count >= majority` | **SELL only** on watchlist |
-| neither reaches majority | **None** (wait) |
+| Watchlist book is **BUY** and `buy_count >= majority` | Continue BUY checks |
+| Watchlist book is **SELL** and `sell_count >= majority` | Continue SELL checks |
+| Scanner is **neutral**, or majority is the opposite side | **No trade** |
 
 Symbols with no depth are counted as missing and never help a side reach the majority.
-
-### Step 2 — Watchlist market depth (per symbol)
-
-Only symbols whose depth signal **matches** the current scanner bias are considered. Same formula as above, using the watchlist symbol's own `volume_difference` (e.g. 5000 means the buy side must exceed the sell side by at least 5000).
 
 ### Step 3 — VWAP entry pocket (optional)
 
@@ -602,7 +603,7 @@ Worked prices:
 | 103 | SELL | Yes — inside 102–105, if previous close is above VWAP |
 | 101 | SELL | No — inside the 2% dead zone |
 
-Buy vs sell still also needs scanner + watchlist depth. A missing previous close skips the entry. A resting unfilled limit is cancelled only if live LTP leaves that pocket.
+Buy vs sell already had to pass watchlist depth and scanner majority before this pocket is checked. A missing previous close skips the entry. A resting unfilled limit is cancelled only if live LTP leaves that pocket.
 
 When the VWAP switch is off, this gate is skipped entirely. If VWAP or LTP is missing, the entry is skipped.
 
@@ -615,10 +616,10 @@ quantity = floor(exposure / share_price)
 
 If the balance cannot fund a single share (or is unavailable), the engine still sends **1 share** so the attempt and the broker's response are logged. Every sizing input is stored on the trade and shown in the order log. `share_price` is the live ask (BUY) or bid (SELL).
 
-### Step 5 — Entry execution
+### Step 6 — Entry execution
 
-- Among candidates passing scanner + depth + (optional) VWAP, pick the **strongest volume margin**.
-- Re-check depth immediately before ordering.
+- Among symbols that passed depth + scanner + (optional) VWAP, pick the **strongest volume margin**.
+- Re-read live depth immediately before ordering. If the book is no longer that side, **do not send** the order.
 - Send a **limit order at the live ask (BUY) or live bid (SELL)**. The VWAP pocket is only a filter; 95/98/102/105 are never the order price.
 - The order stays `PENDING` and occupies the one-position slot until it fills, is cancelled, or is rejected. Exit legs are placed only after the fill.
 

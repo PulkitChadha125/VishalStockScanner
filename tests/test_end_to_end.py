@@ -407,6 +407,34 @@ def test_vwap_band_math() -> None:
         scanner_service.evaluate_depth_signal(600, 100, 500),
         "BUY",
     )
+    check(
+        "buy-heavy book is BUY not SELL",
+        scanner_service.evaluate_depth_signal(11000, 1000, 10000),
+        "BUY",
+    )
+    check(
+        "sell-heavy book is SELL not BUY",
+        scanner_service.evaluate_depth_signal(1000, 11000, 10000),
+        "SELL",
+    )
+    merged = fyers_service._merge_depth_snapshots(
+        {
+            "bid_qty": 68000,
+            "ask_qty": 45000,
+            "qty_source": "full_book",
+            "bid_price": 1,
+            "ask_price": 1,
+        },
+        {
+            "bid_qty": 40000,
+            "ask_qty": 70000,
+            "qty_source": "full_book",
+            "bid_price": 1,
+            "ask_price": 1,
+        },
+    )
+    check("live WS buy qty wins over stale REST", merged["bid_qty"], 68000)
+    check("live WS sell qty wins over stale REST", merged["ask_qty"], 45000)
 
 
 def test_vwap_band_gate_on_tick() -> None:
@@ -550,6 +578,32 @@ def test_scanner_sell_blocks_watchlist_buy() -> None:
     check("no buy limit against a SELL scanner", len(BROKER.legs("LIMIT", "entry")), 0)
     check("no market buy against a SELL scanner", len(BROKER.legs("MARKET")), 0)
     disarm("ALPHA", 100.10)
+    fyers_service.get_vwap_with_meta = orig
+    turn_vwap(False)
+    scanner_bias("BUY")
+
+
+def test_buy_book_cannot_open_sell() -> None:
+    section("Watchlist BUY book cannot open a SELL even if scanner is SELL")
+    orig = fyers_service.get_vwap_with_meta
+    fyers_service.get_vwap_with_meta = lambda *a, **k: fake_vwap(103)
+    turn_vwap(True)
+    BROKER.reset()
+    scanner_bias("SELL")
+    # ALPHA threshold 500; buy 1000 vs sell 100 is a BUY book
+    set_depth("ALPHA", 1000, 100, 100.10, fill_price=100.00, ltp=103.0)
+    se._tick()
+    check("no sell when watchlist buy qty is greater", len(BROKER.legs("LIMIT", "entry")), 0)
+    check("no market sell when watchlist buy qty is greater", len(BROKER.legs("MARKET")), 0)
+
+    # Same tick family: a true SELL book on BETA still works
+    set_depth("BETA", 100, 1000, 100.10, fill_price=100.00, ltp=103.0)
+    se._tick()
+    check("sell still opens when watchlist sell qty is greater", len(BROKER.legs("LIMIT", "entry")), 1)
+    se.square_off_all_open_trades("STOP")
+    repository.delete_trades(today_only=True)
+    disarm("ALPHA", 100.10)
+    disarm("BETA", 100.10)
     fyers_service.get_vwap_with_meta = orig
     turn_vwap(False)
     scanner_bias("BUY")
@@ -857,6 +911,7 @@ def main() -> int:
         test_scanner_neutral_blocks_even_when_depth_and_vwap_pass()
         test_watchlist_depth_below_threshold_blocks()
         test_scanner_sell_blocks_watchlist_buy()
+        test_buy_book_cannot_open_sell()
         test_sell_inside_band_does_not_wait_for_vwap_cross()
         test_prev_close_direction_required()
         first_trade = test_buy_target_hit(app)

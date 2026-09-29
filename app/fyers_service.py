@@ -36,7 +36,7 @@ _vwap_cache: dict[tuple[str, str], tuple[float, float]] = {}
 
 # Fyers depth() allows ONE symbol per request (no batch). Rate-limit to 1 call/sec.
 DEPTH_MIN_INTERVAL_SEC = 1.0
-DEPTH_CACHE_TTL_SEC = 300
+DEPTH_CACHE_TTL_SEC = 30
 DEPTH_RATE_LIMIT_BACKOFF_SEC = 3.0
 
 _depth_cache: dict[str, tuple[dict[str, Any], float]] = {}
@@ -384,16 +384,17 @@ def _merge_depth_snapshots(
             ws_val = ws.get(field)
             if ws_val and float(ws_val) > 0:
                 merged[field] = ws_val
-        if _has_book_totals(rest):
-            merged["bid_qty"] = rest["bid_qty"]
-            merged["ask_qty"] = rest["ask_qty"]
-            merged["qty_source"] = rest.get("qty_source", "full_book")
-            merged["book_source"] = rest.get("book_source", "rest")
-        elif _has_book_totals(ws):
+        # Live WS totals win. Stale REST must not flip BUY/SELL against the live book.
+        if _has_book_totals(ws):
             merged["bid_qty"] = ws["bid_qty"]
             merged["ask_qty"] = ws["ask_qty"]
             merged["qty_source"] = ws.get("qty_source", "full_book")
             merged["book_source"] = ws.get("book_source", "websocket")
+        elif _has_book_totals(rest):
+            merged["bid_qty"] = rest["bid_qty"]
+            merged["ask_qty"] = rest["ask_qty"]
+            merged["qty_source"] = rest.get("qty_source", "full_book")
+            merged["book_source"] = rest.get("book_source", "rest")
         if ws.get("updated_at"):
             merged["updated_at"] = ws["updated_at"]
     elif ws:
@@ -487,9 +488,22 @@ def get_market_depth(
     return None
 
 
-def fetch_market_depth_immediate(symbol_name: str) -> dict[str, Any]:
-    """Direct depth fetch (respects rate limit). Used for one-off probes."""
-    data = _call_depth_api(symbol_name)
+def fetch_market_depth_immediate(
+    symbol_name: str, wait_sec: float = 1.25
+) -> dict[str, Any]:
+    """
+    Direct depth fetch before an entry. Waits briefly if the 1/sec REST
+    slot is busy so a trade is never sent on a stale cached book.
+    """
+    deadline = time.time() + max(float(wait_sec or 0), 0.0)
+    data: dict[str, Any] = {"error": "throttled"}
+    while True:
+        data = _call_depth_api(symbol_name)
+        if data.get("error") != "throttled":
+            break
+        if time.time() >= deadline:
+            break
+        time.sleep(0.05)
     if not data.get("error"):
         _store_depth_cache(symbol_name, data)
     return data
