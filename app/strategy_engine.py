@@ -482,8 +482,8 @@ def _entry_candidate(
 ) -> dict | None:
     """
     Gate order for one watchlist symbol:
-      1. This symbol's book vs its volume difference
-      2. Scanner majority must be the same side
+      1. Scanner majority already selected BUY-only or SELL-only
+      2. This symbol's book vs its volume difference (must match that side)
       3. VWAP pocket + previous close (if the switch is on)
     """
     if not depth or depth.get("error"):
