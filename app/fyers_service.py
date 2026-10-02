@@ -1086,22 +1086,30 @@ def fetch_previous_day_close(symbol_name: str, time_frame: str) -> float | None:
     return float(prior.iloc[-1]["close"])
 
 
-def get_vwap_with_meta(symbol_name: str, time_frame: str) -> dict | None:
+def _vwap_meta_from_cache(tf: str, cached: tuple) -> dict:
+    return {
+        "vwap": cached[0],
+        "time_frame": tf,
+        "request": cached[2],
+        "response": cached[3],
+        "candle_count": cached[4],
+        "prev_prev_close": cached[5] if len(cached) > 5 else None,
+        "prev_close": cached[6] if len(cached) > 6 else None,
+    }
+
+
+def get_vwap_with_meta(
+    symbol_name: str, time_frame: str, cache_only: bool = False
+) -> dict | None:
     """VWAP plus Fyers history request/response metadata."""
     tf = (time_frame or "").strip().lower()
     cache_key = (symbol_name.upper(), tf)
     now = time.time()
     cached = _vwap_cache.get(cache_key)
-    if cached and (now - cached[1]) < VWAP_CACHE_TTL_SEC:
-        return {
-            "vwap": cached[0],
-            "time_frame": tf,
-            "request": cached[2],
-            "response": cached[3],
-            "candle_count": cached[4],
-            "prev_prev_close": cached[5] if len(cached) > 5 else None,
-            "prev_close": cached[6] if len(cached) > 6 else None,
-        }
+    if cached and ((now - cached[1]) < VWAP_CACHE_TTL_SEC or cache_only):
+        return _vwap_meta_from_cache(tf, cached)
+    if cache_only:
+        return None
 
     result = fetch_history_for_vwap(symbol_name, time_frame)
     if not result:

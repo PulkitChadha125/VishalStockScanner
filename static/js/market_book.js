@@ -18,6 +18,7 @@
   let inFlight = false;
   let abortCtrl = null;
   let lastJson = "";
+  let lastGood = null;
 
   function formatQty(n) {
     if (n == null || Number.isNaN(n)) return "—";
@@ -156,21 +157,6 @@
       return;
     }
 
-    if (!marketOpen) {
-      emptyRow.hidden = true;
-      symbols.forEach((row) => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td><strong>${escapeHtml(row.symbol_name)}</strong></td>
-          <td colspan="8" class="market-book__status">${escapeHtml(
-            statusLabel(row, marketMessage)
-          )}</td>
-        `;
-        tbody.appendChild(tr);
-      });
-      return;
-    }
-
     emptyRow.hidden = true;
 
     symbols.forEach((row) => {
@@ -235,12 +221,17 @@
         scanner: data.scanner,
         symbols: data.symbols,
       });
+      lastGood = data;
       if (snapshot !== lastJson) {
         lastJson = snapshot;
         renderRows(data);
       }
     } catch (err) {
       if (err.name === "AbortError") return;
+      if (lastGood) {
+        if (updatedEl) updatedEl.textContent = "Update failed — showing last book";
+        return;
+      }
       if (updatedEl) updatedEl.textContent = "Update failed — retrying…";
     } finally {
       inFlight = false;
@@ -276,11 +267,14 @@
 
   window.addEventListener("session-reset", () => {
     lastJson = "";
+    lastGood = null;
     renderBanner({ market_open: false, market_message: "Session reset — log in again." });
-    renderRows(
-      [],
-      false
-    );
+    renderRows({
+      symbols: [],
+      connected: false,
+      market_open: false,
+      market_message: "Session reset — log in again.",
+    });
     if (updatedEl) updatedEl.textContent = "Session reset";
   });
 

@@ -397,7 +397,7 @@ def _open_position_symbol() -> str | None:
     return trade["symbol_name"] if trade else None
 
 
-def get_engine_status() -> dict:
+def get_engine_status(*, include_balance: bool = True) -> dict:
     settings = repository.get_strategy_settings()
     engine_alive = _thread is not None and _thread.is_alive() and not _stop_event.is_set()
 
@@ -416,7 +416,7 @@ def get_engine_status() -> dict:
         settings = repository.get_strategy_settings()
 
     bal = fyers_service.get_cached_balance()
-    if bal is None and fyers_service.is_connected():
+    if include_balance and bal is None and fyers_service.is_connected():
         bal, _ = fyers_service.fetch_balance()
     # Effective running for UI: DB flag OR live engine thread
     is_running = bool(settings.get("is_running")) or engine_alive

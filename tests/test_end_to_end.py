@@ -865,6 +865,25 @@ def test_eod_square_off(open_trade):
     check("nothing pending", se.has_pending_leg_cancels(), False)
 
 
+def test_market_book_dashboard(app):
+    section("Market book dashboard returns live totals")
+    set_depth("ALPHA", 68000, 45000, 100.10, ltp=99.0)
+    client = app.test_client()
+    res = client.get("/api/symbols/market-book")
+    data = res.get_json() or {}
+    alpha = next(
+        (s for s in data.get("symbols", []) if s.get("symbol_name") == "ALPHA"),
+        {},
+    )
+    check("market-book http ok", res.status_code, 200)
+    check("alpha row is live", alpha.get("status"), "live")
+    check("alpha buy qty", alpha.get("book_buy_qty"), 68000.0)
+    check("alpha sell qty", alpha.get("book_sell_qty"), 45000.0)
+    check("alpha buy_diff", alpha.get("buy_diff"), 23000.0)
+    check("scanner line present", "buy_count" in (data.get("scanner") or {}), True)
+    check("session hours present", bool(data.get("start_time")), True)
+
+
 def test_api_surface(app, first_trade):
     section("Flask API shows the bracket data the UI renders")
     client = app.test_client()
@@ -920,6 +939,7 @@ def main() -> int:
         test_rejected_sl_falls_back_to_local()
         open_trade = test_unconfirmed_cancel_blocks_next_entry()
         test_eod_square_off(open_trade)
+        test_market_book_dashboard(app)
         test_api_surface(app, first_trade)
 
     total = len(PASSED) + len(FAILED)

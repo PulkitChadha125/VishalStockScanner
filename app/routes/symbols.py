@@ -94,62 +94,203 @@ def list_symbols():
     return jsonify(repository.list_symbols())
 
 
+def _session_or_fallback() -> dict:
+    try:
+        session = market_tz.session_status()
+        if session:
+            return session
+    except Exception as exc:
+        print(f"[MARKET-BOOK] session status failed: {exc}", flush=True)
+    now = market_tz.now_ist()
+    return {
+        "market_open": True,
+        "message": "",
+        "start_time": "",
+        "stop_time": "",
+        "timezone": "Asia/Kolkata",
+        "now": now.strftime("%H:%M"),
+    }
+
+
+def _empty_scanner() -> dict:
+    return {
+        "allowed_signal": None,
+        "buy_count": 0,
+        "sell_count": 0,
+        "majority": 0,
+        "total": 0,
+        "missing": 0,
+        "skipped": True,
+        "is_neutral": False,
+    }
+
+
+def _symbol_book_row(
+    sym: dict,
+    *,
+    vwap_enabled: bool,
+    scanner_bias: str | None,
+    scanner_skipped: bool,
+    scanner_summary: dict,
+    can_trade: bool,
+    strategy_running: bool,
+) -> dict:
+    name = sym["symbol_name"]
+    depth = fyers_service.get_market_depth(name)
+    threshold = float(sym["volume_difference"])
+
+    if not depth or depth.get("error"):
+        return {"symbol_name": name, "status": "waiting"}
+
+    if not fyers_service.has_book_totals(depth):
+        return {"symbol_name": name, "status": "waiting_totals"}
+
+    book_buy = float(depth.get("bid_qty") or 0)
+    book_sell = float(depth.get("ask_qty") or 0)
+    buy_diff = book_buy - book_sell
+    sell_diff = book_sell - book_buy
+    signal = scanner_service.evaluate_depth_signal(book_buy, book_sell, threshold)
+    vwap_signal = None
+    vwap_ok = None
+    vwap_reason = None
+    ltp = fyers_service.get_ltp(name)
+    if signal and vwap_enabled:
+        vwap_meta = fyers_service.get_vwap_with_meta(
+            name, sym["time_frame"], cache_only=True
+        )
+        vwap = vwap_meta.get("vwap") if vwap_meta else None
+        range_down, range_up = fyers_service.symbol_entry_ranges(sym)
+        vwap_ok, vwap_reason, _ = fyers_service.passes_vwap_band_filter(
+            signal,
+            vwap,
+            ltp,
+            range_down,
+            range_up,
+            vwap_meta.get("prev_close") if vwap_meta else None,
+        )
+        if vwap_ok:
+            vwap_signal = signal
+    elif signal and not vwap_enabled:
+        vwap_ok = True
+        vwap_signal = signal
+        vwap_reason = "VWAP filter off"
+
+    scanner_ok = bool(
+        signal
+        and (scanner_skipped or (scanner_bias is not None and signal == scanner_bias))
+    )
+    if signal and not scanner_ok:
+        if scanner_summary["is_neutral"]:
+            vwap_reason = (
+                f"Scanner neutral — need {scanner_summary['majority']} of "
+                f"{scanner_summary['total']} ({signal} blocked)"
+            )
+        else:
+            vwap_reason = (
+                f"Scanner majority is {scanner_bias or '—'} — {signal} blocked"
+            )
+
+    trade_ready = bool(
+        signal and vwap_signal and scanner_ok and can_trade and strategy_running
+    )
+    total = book_buy + book_sell
+    bid_pct = round((book_buy / total) * 100, 2) if total > 0 else 0
+
+    return {
+        "symbol_name": name,
+        "status": "live",
+        "book_buy_qty": book_buy,
+        "book_sell_qty": book_sell,
+        "bid_pct": bid_pct,
+        "bid_price": depth.get("bid_price"),
+        "ask_price": depth.get("ask_price"),
+        "ltp": ltp,
+        "buy_diff": buy_diff,
+        "sell_diff": sell_diff,
+        "volume_diff": threshold,
+        "signal": signal,
+        "vwap_signal": vwap_signal,
+        "vwap_ok": vwap_ok,
+        "vwap_reason": vwap_reason,
+        "scanner_ok": scanner_ok,
+        "trade_ready": trade_ready,
+        "cache_age_sec": depth.get("cache_age_sec"),
+        "book_source": depth.get("book_source", depth.get("source", "rest")),
+    }
+
+
 @symbols_bp.route("/market-book", methods=["GET"])
 def market_book_snapshot():
-    """Lightweight read of WebSocket cache — full book buy/sell totals per symbol."""
-    symbols = repository.list_symbols()
-    session = market_tz.session_status()
-
-    def _closed_payload(**extra):
+    """Read cached book totals. Always paints the dashboard, even during a trade."""
+    try:
+        return _market_book_response()
+    except Exception as exc:
+        print(f"[MARKET-BOOK] snapshot failed: {exc}", flush=True)
         return jsonify(
             {
                 "connected": fyers_service.is_connected(),
                 "ws_active": fyers_service.is_market_ws_active(),
-                "market_open": False,
-                "market_message": session["message"],
-                "start_time": session["start_time"],
-                "stop_time": session["stop_time"],
-                "timezone": session["timezone"],
-                "now": session["now"],
-                "updated_at": market_tz.now_ist().strftime("%H:%M:%S"),
-                "symbols": [
-                    {"symbol_name": s["symbol_name"], "status": "market_closed"}
-                    for s in symbols
-                ],
-                **extra,
-            }
-        )
-
-    if not session["market_open"]:
-        return _closed_payload()
-
-    if not fyers_service.is_connected():
-        return jsonify(
-            {
-                "connected": False,
-                "ws_active": False,
                 "market_open": True,
                 "market_message": "",
-                "start_time": session["start_time"],
-                "stop_time": session["stop_time"],
-                "timezone": session["timezone"],
-                "now": session["now"],
+                "start_time": "",
+                "stop_time": "",
+                "timezone": "Asia/Kolkata",
+                "now": market_tz.now_ist().strftime("%H:%M"),
                 "updated_at": market_tz.now_ist().strftime("%H:%M:%S"),
-                "symbols": [
-                    {"symbol_name": s["symbol_name"], "status": "login_required"}
-                    for s in symbols
-                ],
+                "scanner": _empty_scanner(),
+                "symbols": [],
+                "error": "dashboard_read_failed",
             }
         )
 
-    rows: list[dict] = []
-    engine_status = strategy_engine.get_engine_status()
+
+def _market_book_response():
+    symbols = repository.list_symbols()
+    session = _session_or_fallback()
+    connected = fyers_service.is_connected()
+    base = {
+        "connected": connected,
+        "ws_active": fyers_service.is_market_ws_active(),
+        "market_open": bool(session.get("market_open")),
+        "market_message": session.get("message") or "",
+        "start_time": session.get("start_time") or "",
+        "stop_time": session.get("stop_time") or "",
+        "timezone": session.get("timezone") or "Asia/Kolkata",
+        "now": session.get("now") or "",
+        "updated_at": market_tz.now_ist().strftime("%H:%M:%S"),
+        "scanner": _empty_scanner(),
+        "symbols": [{"symbol_name": s["symbol_name"], "status": "waiting"} for s in symbols],
+        "strategy_running": False,
+        "can_take_trades": False,
+        "trade_block_reason": None,
+        "open_position_symbol": None,
+    }
+
+    if not connected:
+        base["symbols"] = [
+            {"symbol_name": s["symbol_name"], "status": "login_required"}
+            for s in symbols
+        ]
+        return jsonify(base)
+
+    try:
+        engine_status = strategy_engine.get_engine_status(include_balance=False)
+    except Exception as exc:
+        print(f"[MARKET-BOOK] engine status failed: {exc}", flush=True)
+        engine_status = {}
+
     strategy_running = bool(engine_status.get("is_running"))
     can_trade = bool(engine_status.get("can_take_more_trades"))
     vwap_enabled = bool(engine_status.get("vwap_enabled", True))
     open_position = engine_status.get("open_position")
     open_symbol = open_position["symbol_name"] if open_position else None
-    scanner_bias, scanner_info = scanner_service.get_live_bias()
+
+    try:
+        scanner_bias, scanner_info = scanner_service.get_live_bias()
+    except Exception as exc:
+        print(f"[MARKET-BOOK] scanner bias failed: {exc}", flush=True)
+        scanner_bias, scanner_info = None, {}
+
     scanner_skipped = bool(scanner_info.get("skipped"))
     scanner_summary = {
         "allowed_signal": scanner_bias,
@@ -165,7 +306,9 @@ def market_book_snapshot():
     if not strategy_running:
         trade_block_reason = "Strategy is stopped — click Start to take trades"
     elif open_symbol:
-        trade_block_reason = f"Open trade in {open_symbol} — waiting for SL, target, or time exit"
+        trade_block_reason = (
+            f"Open trade in {open_symbol} — waiting for SL, target, or time exit"
+        )
     elif not can_trade:
         taken = engine_status.get("trades_taken_today", 0)
         max_trades = engine_status.get("max_trades", 0)
@@ -173,114 +316,41 @@ def market_book_snapshot():
     else:
         trade_block_reason = None
 
+    rows: list[dict] = []
     for sym in symbols:
-        name = sym["symbol_name"]
-        depth = fyers_service.get_market_depth(name)
-        threshold = float(sym["volume_difference"])
-
-        if not depth or depth.get("error"):
-            rows.append({"symbol_name": name, "status": "waiting"})
-            continue
-
-        if not fyers_service.has_book_totals(depth):
-            rows.append({"symbol_name": name, "status": "waiting_totals"})
-            continue
-
-        book_buy = float(depth.get("bid_qty") or 0)
-        book_sell = float(depth.get("ask_qty") or 0)
-        signal = scanner_service.evaluate_depth_signal(book_buy, book_sell, threshold)
-        vwap_signal = None
-        vwap_ok = None
-        vwap_reason = None
-        ltp = fyers_service.get_ltp(name)
-        if signal and vwap_enabled:
-            vwap_meta = fyers_service.get_vwap_with_meta(name, sym["time_frame"])
-            vwap = vwap_meta.get("vwap") if vwap_meta else None
-            range_down, range_up = fyers_service.symbol_entry_ranges(sym)
-            vwap_ok, vwap_reason, _ = fyers_service.passes_vwap_band_filter(
-                signal,
-                vwap,
-                ltp,
-                range_down,
-                range_up,
-                vwap_meta.get("prev_close") if vwap_meta else None,
+        try:
+            rows.append(
+                _symbol_book_row(
+                    sym,
+                    vwap_enabled=vwap_enabled,
+                    scanner_bias=scanner_bias,
+                    scanner_skipped=scanner_skipped,
+                    scanner_summary=scanner_summary,
+                    can_trade=can_trade,
+                    strategy_running=strategy_running,
+                )
             )
-            if vwap_ok:
-                vwap_signal = signal
-        elif signal and not vwap_enabled:
-            vwap_ok = True
-            vwap_signal = signal
-            vwap_reason = "VWAP filter off"
+        except Exception as exc:
+            print(
+                f"[MARKET-BOOK] {sym.get('symbol_name')}: {exc}",
+                flush=True,
+            )
+            rows.append(
+                {"symbol_name": sym.get("symbol_name") or "?", "status": "waiting"}
+            )
 
-        scanner_ok = bool(
-            signal
-            and (scanner_skipped or (scanner_bias is not None and signal == scanner_bias))
-        )
-        if signal and not scanner_ok:
-            if scanner_summary["is_neutral"]:
-                vwap_reason = (
-                    f"Scanner neutral — need {scanner_summary['majority']} of "
-                    f"{scanner_summary['total']} ({signal} blocked)"
-                )
-            else:
-                vwap_reason = (
-                    f"Scanner majority is {scanner_bias or '—'} — {signal} blocked"
-                )
-
-        trade_ready = bool(
-            signal
-            and vwap_signal
-            and scanner_ok
-            and can_trade
-            and strategy_running
-        )
-
-        total = book_buy + book_sell
-        bid_pct = round((book_buy / total) * 100, 2) if total > 0 else 0
-
-        rows.append(
-            {
-                "symbol_name": name,
-                "status": "live",
-                "book_buy_qty": book_buy,
-                "book_sell_qty": book_sell,
-                "bid_pct": bid_pct,
-                "bid_price": depth.get("bid_price"),
-                "ask_price": depth.get("ask_price"),
-                "ltp": ltp,
-                "buy_diff": buy_diff,
-                "sell_diff": sell_diff,
-                "volume_diff": threshold,
-                "signal": signal,
-                "vwap_signal": vwap_signal,
-                "vwap_ok": vwap_ok,
-                "vwap_reason": vwap_reason,
-                "scanner_ok": scanner_ok,
-                "trade_ready": trade_ready,
-                "cache_age_sec": depth.get("cache_age_sec"),
-                "book_source": depth.get("book_source", "rest"),
-            }
-        )
-
-    return jsonify(
+    base.update(
         {
             "connected": True,
-            "ws_active": fyers_service.is_market_ws_active(),
-            "market_open": True,
-            "market_message": "",
-            "start_time": session["start_time"],
-            "stop_time": session["stop_time"],
-            "timezone": session["timezone"],
-            "now": session["now"],
-            "updated_at": market_tz.now_ist().strftime("%H:%M:%S"),
+            "scanner": scanner_summary,
+            "symbols": rows,
             "strategy_running": strategy_running,
             "can_take_trades": can_trade and strategy_running and not open_symbol,
             "trade_block_reason": trade_block_reason,
             "open_position_symbol": open_symbol,
-            "scanner": scanner_summary,
-            "symbols": rows,
         }
     )
+    return jsonify(base)
 
 
 @symbols_bp.route("/export.csv", methods=["GET"])
